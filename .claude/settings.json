@@ -1,0 +1,6 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:/Users/Mitch/OneDrive/Documents/Desktop/Projects/Learning Python/Wikipedia Map/.claude/statusline.ps1\""
+  }
+}
