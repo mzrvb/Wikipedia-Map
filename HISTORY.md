@@ -11,6 +11,41 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ## 2026-07-20
 
+### Skeleton reconciled: `conceptmap` deleted, `wikimap` scaffolded
+
+Resolves the "skeleton does not match the brief" item below. `src/conceptmap/` and its
+`tests/test_graph.py` are gone; `src/wikimap/` now matches brief §5 exactly.
+
+The two layouts were not reconcilable by renaming — the old skeleton encoded a design the
+brief replaced. `propose.py` assumed *proposed* concept associations where the brief wants
+*real* hyperlinks, and `viz/render.py` + `template.html` assumed server-side HTML rendering
+where the brief wants a FastAPI app serving static files that consume an SSE Step stream.
+Its flat `algorithms/{bfs_threshold,greedy_beam}.py` also has no place to express the
+explore-vs-connect split, which is load-bearing: the two modes anchor their top-K ranking
+to different things (seed vs. target, decision C). All 14 files were 0 bytes, so nothing
+was lost.
+
+**Placeholders, not empty files.** Each scaffolded module holds a docstring naming its
+responsibility and the constraint it must honor. This is deliberate — the previous skeleton
+was 13 zero-byte files, and a zero-byte file cannot tell you whether it is unwritten or
+belongs to a dead design. That ambiguity is what cost this session an investigation.
+
+Two open readings of the brief, resolved by judgement and worth revisiting if they bite:
+
+- **`embed.py` placement.** Brief §5's tree omits it entirely, but roadmap step 2 says to
+  build it. Placed at `src/wikimap/embed.py`, a sibling of `feedback.py`, since both are
+  shared services consumed by both modes. The tree looks like the incomplete artifact here.
+- **sync vs. async fetching.** §5's stack line says "httpx (async Wikipedia calls)", but
+  §2's rules and the `pyproject.toml` it supplies both say synchronous `wikipedia-api`,
+  with httpx commented out as the upgrade path. Went with sync — two sources against one,
+  and CLAUDE.md already documented it that way. The §5 prose is stale, not a live decision.
+
+`pyproject.toml` is transcribed verbatim from the brief. `.gitignore` ignores `data/`
+(regenerable cache, and it will get large), `.env`, and `.claude/settings.local.json`.
+
+Note: HISTORY previously said root `algorithms.py` was "staged for deletion" — it was
+actually already removed in `780a93e`. Corrected here rather than in place.
+
 ### Statusline moved from global to project scope
 
 `.claude/statusline.ps1` and `.claude/settings.json` added. The statusline shows
@@ -46,6 +81,9 @@ and `torch` in system Python, only two deps in the venv), so its CLAUDE.md instr
 *not* to activate the venv. That failure should not be reproduced here.
 
 ### Open: skeleton does not match the brief
+
+**Resolved same day — see "Skeleton reconciled" above.** Left in place as the record of
+why the question came up.
 
 Commit `0cfaa8a` scaffolded `src/conceptmap/` — `propose.py`, `viz/`,
 `bfs_threshold.py`, `greedy_beam.py` — a superseded design based on *proposed*

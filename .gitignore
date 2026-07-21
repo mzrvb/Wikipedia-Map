@@ -1,0 +1,22 @@
+# environment — USER_AGENT lives here
+.env
+
+# virtualenv
+.venv/
+
+# cached Wikipedia links and embeddings (regenerable, and large)
+data/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# tooling
+.pytest_cache/
+.ruff_cache/
+
+# claude code — machine-specific overrides
+.claude/settings.local.json

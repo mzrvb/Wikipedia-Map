@@ -2,13 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Read [`HISTORY.md`](HISTORY.md) before starting work.** This file says what the rules
+*are*; `HISTORY.md` says *why* they are that way, which decisions were reversed, and which
+values are placeholders. It also carries the open questions that STATUS only summarizes.
+Update it alongside this file — see [Working practice](#working-practice).
+
 ## STATUS
 
 **Roadmap step 1 (data layer) — not started. No implementation code exists yet.**
 
-The repo currently holds an empty `src/conceptmap/` skeleton from a superseded design
-(all files 0 bytes). The authoritative plan is `~/Downloads/wikimap_brief.md`, which
-specifies `src/wikimap/`. Reconcile that before writing code.
+The package layout is settled: `src/wikimap/`, matching brief §5. The superseded
+`src/conceptmap/` skeleton has been deleted. `pyproject.toml`, `.gitignore`, `.env.example`,
+and `README.md` are in place; the venv has not been created and nothing is installed.
+
+Every module under `src/wikimap/` is a placeholder holding only a docstring that states
+that file's responsibility. Step 1 fills in `wiki/client.py` and `wiki/cache.py` first.
+
+The authoritative plan remains `~/Downloads/wikimap_brief.md`.
 
 Update this section after each roadmap step.
 
@@ -132,7 +142,14 @@ Build one roadmap step at a time (brief §6). Each step is a working, testable c
 get it green, run the tests, review `git diff`, commit, then move on. Do not one-shot ahead.
 State the plan and the files you'll touch before writing code.
 
-**Log significant changes in `HISTORY.md`.** Add an entry when you complete a roadmap step,
+**No zero-byte files.** Every file carries content from the moment it is created — a
+placeholder module gets a docstring naming its responsibility and the constraints the
+eventual implementation must honor; html/js/css get a comment header doing the same.
+An empty file cannot tell you whether it is unwritten or belongs to a dead design, which
+is exactly what made the superseded `conceptmap` skeleton expensive to resolve. Check with
+`find src tests -type f -empty` — it should return nothing.
+
+**Log significant changes in [`HISTORY.md`](HISTORY.md).** Add an entry when you complete a roadmap step,
 make or reverse an architectural decision, introduce a placeholder or known-wrong value, or
 do something a future session would otherwise misread. Record the *reasoning*, not just the
 change — `git log` already covers what changed. Skip routine edits. Newest entry at the top,
