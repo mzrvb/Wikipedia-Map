@@ -13,12 +13,17 @@ Update it alongside this file — see [Working practice](#working-practice).
 `wiki/cache.py` (memory → disk two-layer cache) are implemented and tested — 7 tests green,
 `ruff check` clean. Venv exists at `.venv`, deps installed.
 
-**Roadmap step 2 (embeddings + scoring) — not started next.** `embed.py` is still a
-placeholder. It needs: embed a page title, cosine similarity between two pages, and the
-same two-layer cache pattern as step 1, keyed by page title.
+**Roadmap step 2 (embeddings + scoring) — done.** `embed.py` implements `cosine_similarity`,
+`Embedder` (sole importer of sentence_transformers, lazy model load), and `EmbeddingCache`
+(memory → disk → compute, keyed by title, same shape as `wiki/cache.py`). Model name lives in
+`config.EMBEDDING_MODEL`. 14 fast tests green + 1 `slow`-marked real-model proof (related pages
+score higher than unrelated); `ruff check` clean. `numpy` added as an explicit dep.
 
-Every other module under `src/wikimap/` beyond `wiki/` remains a placeholder holding only a
-docstring that states that file's responsibility.
+**Roadmap step 3 (graph model + contracts) — not started next.** `graph/model.py` needs the
+networkx wrapper plus the `Step` and `MoveEvaluation` dataclasses (contracts 2 and 3).
+
+Every other module under `src/wikimap/` beyond `wiki/` and `embed.py` remains a placeholder
+holding only a docstring that states that file's responsibility.
 
 The authoritative plan remains `~/Downloads/wikimap_brief.md`.
 

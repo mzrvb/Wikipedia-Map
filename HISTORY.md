@@ -11,6 +11,39 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ## 2026-07-21
 
+### Roadmap step 2 (embeddings + scoring) complete
+
+`embed.py` implemented per brief §6 step 2. Three pieces, deliberately mirroring the `wiki/`
+layering so the pattern stays consistent across the codebase:
+
+- `cosine_similarity(a, b)` — a module-level function, not a method: pure math, no state.
+  Guards `denom == 0` so a zero vector returns 0.0 instead of a NaN/divide-by-zero.
+- `Embedder` — the ONLY importer of `sentence_transformers`, same single-front-door rule as
+  `WikiClient` for `wikipediaapi`. Model loads lazily on first `embed()` (import lives inside
+  `_get_model`), so merely importing `embed.py` never triggers the ~80MB download. This is
+  also what lets the fast tests run with a fake embedder that never loads a model.
+- `EmbeddingCache` — same memory → disk → compute chain as `LinkCache`, keyed by title.
+  "Compute" (the model forward pass) is the expensive step the network call was in `LinkCache`.
+  One wrinkle vs LinkCache: numpy arrays aren't JSON-serializable, so disk writes go through
+  `.tolist()` and reads rebuild with `np.array(...)`.
+
+Decisions made in this step:
+- **Model = `sentence-transformers/all-MiniLM-L6-v2`**, stored in `config.EMBEDDING_MODEL`
+  (contract 1 — a knob, not hardcoded in embed.py). Chosen as the standard small/fast default
+  (~80MB, 384-dim). Swappable later without touching embed.py.
+- **numpy added as an explicit dependency** (not pandas). Cosine similarity is array math, and
+  the future top-K cap (decision C) wants batched vectorized ranking — numpy's job. Pandas
+  would be the wrong abstraction (labeled tabular data, not homogeneous float blocks).
+- **`slow` pytest marker + `addopts = "-m 'not slow'"`**: the real-model test (brief's "related
+  scores higher than unrelated" proof) is deselected by default so `pytest` stays ~1s. Run it
+  with `pytest -m slow`. Both were run and pass: 14 fast + 1 slow.
+
+Next: step 3, `graph/model.py` — networkx wrapper + `Step`/`MoveEvaluation` (contracts 2, 3).
+
+---
+
+## 2026-07-21
+
 ### Roadmap step 1 (data layer) complete
 
 `wiki/client.py` and `wiki/cache.py` implemented per brief §6 step 1 and committed in

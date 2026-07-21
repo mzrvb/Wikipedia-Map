@@ -9,6 +9,7 @@ dependencies = [
     "python-dotenv>=1.0",            # loads USER_AGENT from .env
     "networkx>=3.3",
     "sentence-transformers>=3.0",    # embeddings — powers BOTH the top-20 cap and feedback
+    "numpy>=1.26",                   # cosine similarity + batched top-K ranking (decision C)
 ]
 
 [project.optional-dependencies]
@@ -25,3 +26,9 @@ packages = ["src/wikimap"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+# Skip slow tests (real model download/inference) by default. Run them explicitly
+# with `pytest -m slow`, or everything with `pytest -m "slow or not slow"`.
+addopts = "-m 'not slow'"
+markers = [
+    "slow: needs the real embedding model (~80MB download on first run)",
+]
