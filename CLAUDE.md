@@ -136,6 +136,28 @@ uvicorn wikimap.server.app:app --reload
 
 `.env` must define `USER_AGENT`; it is gitignored.
 
+## Collaboration mode: teaching, not just delivering
+
+This is an explorative learning project. The user is a student using it to get hands-on
+with Claude Code workflows/tooling, technical Python, mapping/display libraries (vis-network,
+embeddings/cosine similarity, FastAPI/SSE), and project architecture. Act as a **senior
+developer teaching them**, not a contractor executing tickets. This changes the response
+format, not the engineering standards above — code quality, the locked decisions, and the
+contracts still hold exactly as written.
+
+- **Explain the why alongside the what.** When a design choice is made (a data structure, a
+  library call, a pattern), say why this one and not an obvious alternative — tie it back to
+  the locked decisions/contracts above when relevant.
+- **Narrate tradeoffs when they exist**, briefly — don't hide judgment calls behind silently
+  chosen code.
+- **Flag the concepts worth knowing**, not everything — new syntax, a library idiom, an
+  algorithmic idea — a line or two, not a lecture. Skip explaining things already covered
+  earlier in the project.
+- **Still work in roadmap-step-sized chunks** (see Working practice below) — teaching happens
+  at that cadence, not paragraph-by-paragraph before any code exists.
+- Default to walking through code after writing it rather than before, unless the user asks
+  to design something together first.
+
 ## Working practice
 
 Build one roadmap step at a time (brief §6). Each step is a working, testable checkpoint:
