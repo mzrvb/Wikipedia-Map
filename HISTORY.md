@@ -9,6 +9,30 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## 2026-07-21
+
+### Roadmap step 1 (data layer) complete
+
+`wiki/client.py` and `wiki/cache.py` implemented per brief §6 step 1 and committed in
+`a03ce47`. Both fixes from the old repo landed: `p.ns == 0` filtering (no colon check) and
+a real disk-backed cache (JSON file per title under `data/links/`), checked memory → disk →
+network in that order, writing back to both layers on a network fetch.
+
+`tests/test_wiki_client.py` proves all four things brief §6 step 1 asked for: ns0-only
+filtering, UA passed to `wikipediaapi.Wikipedia`, retry-then-give-up on failure, and the
+cache surviving a fresh instance (simulating a restart) via the disk layer alone. 7 tests
+green, `ruff check` clean, no empty files.
+
+Also added `LEARN.md` — separate from this file. `HISTORY.md` tracks *project* reasoning;
+`LEARN.md` tracks concepts the human building this is still internalizing (classes as
+toolboxes not top-down scripts, `self` binding, the wrapper-layering pattern here). Keep
+them distinct — don't let personal learning notes bleed into project rationale or vice versa.
+
+Next: step 2, `embed.py` — page-title embeddings + cosine similarity, same two-layer cache
+shape as `wiki/cache.py`.
+
+---
+
 ## 2026-07-20
 
 ### Skeleton reconciled: `conceptmap` deleted, `wikimap` scaffolded

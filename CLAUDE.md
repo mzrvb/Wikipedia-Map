@@ -9,14 +9,16 @@ Update it alongside this file — see [Working practice](#working-practice).
 
 ## STATUS
 
-**Roadmap step 1 (data layer) — not started. No implementation code exists yet.**
+**Roadmap step 1 (data layer) — done.** `wiki/client.py` (ns0 filtering, UA, retry) and
+`wiki/cache.py` (memory → disk two-layer cache) are implemented and tested — 7 tests green,
+`ruff check` clean. Venv exists at `.venv`, deps installed.
 
-The package layout is settled: `src/wikimap/`, matching brief §5. The superseded
-`src/conceptmap/` skeleton has been deleted. `pyproject.toml`, `.gitignore`, `.env.example`,
-and `README.md` are in place; the venv has not been created and nothing is installed.
+**Roadmap step 2 (embeddings + scoring) — not started next.** `embed.py` is still a
+placeholder. It needs: embed a page title, cosine similarity between two pages, and the
+same two-layer cache pattern as step 1, keyed by page title.
 
-Every module under `src/wikimap/` is a placeholder holding only a docstring that states
-that file's responsibility. Step 1 fills in `wiki/client.py` and `wiki/cache.py` first.
+Every other module under `src/wikimap/` beyond `wiki/` remains a placeholder holding only a
+docstring that states that file's responsibility.
 
 The authoritative plan remains `~/Downloads/wikimap_brief.md`.
 
