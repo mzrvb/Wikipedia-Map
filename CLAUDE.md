@@ -19,10 +19,18 @@ Update it alongside this file — see [Working practice](#working-practice).
 `config.EMBEDDING_MODEL`. 14 fast tests green + 1 `slow`-marked real-model proof (related pages
 score higher than unrelated); `ruff check` clean. `numpy` added as an explicit dep.
 
-**Roadmap step 3 (graph model + contracts) — not started next.** `graph/model.py` needs the
-networkx wrapper plus the `Step` and `MoveEvaluation` dataclasses (contracts 2 and 3).
+**Roadmap step 3 (graph model + contracts) — done.** The contracts (contracts 2 and 3) live in
+`graph/contracts.py`, split out from `graph/model.py` because they're consumed all over the
+codebase while the wrapper is just one consumer: `Grade` (str-Enum, six values), `Node`/`Edge`,
+`Step`, and `MoveEvaluation` (`from_` trailing-underscore since `from` is a keyword). `graph/model.py`
+holds `WikiGraph`, a thin `networkx.DiGraph` wrapper (directed — links are one-way) whose only mutator
+is `apply(step)`. 21 fast tests green (7 new in `test_graph.py`), `ruff check` clean. No new deps —
+`networkx>=3.3` was already declared.
 
-Every other module under `src/wikimap/` beyond `wiki/` and `embed.py` remains a placeholder
+**Roadmap step 4 (an algorithm emitting Steps) — next.** `algorithms/base.py` ABC plus the first
+Connect algorithm (`greedy`), reading knobs from `config` (contract 1) and yielding `Step`s (contract 2).
+
+Every other module under `src/wikimap/` beyond `wiki/`, `embed.py`, and `graph/` remains a placeholder
 holding only a docstring that states that file's responsibility.
 
 The authoritative plan remains `~/Downloads/wikimap_brief.md`.

@@ -20,6 +20,36 @@ what's still shaky, what to revisit. Newest entries at the top of each section.
 
 ## Understood (apprehended, for reference)
 
+- **2026-07-23 — Move grading is arithmetic on ONE cosine axis.** The whole scoring scheme
+  (decision B, built in step 8) runs on a single number line: each page's position =
+  `cosine_similarity(embed(page), embed(target))` (its "eval" — warmer = closer to target).
+  From that: `your_delta` = how far your move moved you along the axis, `best_delta` = how far
+  the best available neighbor would have, `regret = best_delta - your_delta`. Five of the six
+  grades (Best/Good/Inaccuracy/Mistake/Blunder) are just *bands of regret* — one computation,
+  memoryless, no move history. There is no separate metric per grade; it's one instrument
+  (cosine similarity) read multiple times. Only **Brilliant** breaks the pattern: it needs the
+  regret ≈ 0 (was best) AND a second test on a *different* axis — `cosine_similarity(link,
+  from_page)` low, i.e. "looked unrelated on the surface but paid off." That's why Brilliant
+  isn't forced through the same formula. `feedback.py` (contract 3) is where this messy
+  special-casing is allowed to live; downstream only ever sees the six-value `Grade` enum.
+
+- **2026-07-23 — Lazy load + memoization guard (`Embedder._get_model`).** Three-stage lifecycle
+  for an expensive resource: `__init__` only *names* it (stores the model-name string, sets
+  `self._model = None` — loads nothing); `_get_model` *builds* it, but guarded by
+  `if self._model is None:` so the ~80MB `SentenceTransformer(...)` construction happens exactly
+  once and every later call reuses the cached object; `embed()` *uses* it. The guard is
+  memoization ("build once, remember, reuse"), NOT hardcoding. Loading lazily (in `_get_model`,
+  with the import inside it too) rather than eagerly in `__init__` is what keeps merely importing
+  `embed.py` — or running the fast test suite — from triggering the model download. Same
+  single-front-door spirit as `WikiClient` for `wikipediaapi` (see wrapper-layering below).
+
+- **2026-07-23 — A public method calling a private one is just ordinary composition.** Calling
+  `embedder.embed(title)` transitively runs `self._get_model()` because `embed`'s body calls it —
+  not because of any injection or special resolution. `_get_model` isn't a "dependency" wired in
+  from outside; it's a plain method call on the same instance, the leading underscore only marking
+  it as internal plumbing `embed()` is built on top of. Outside code calls `embed()`; `_get_model`
+  is implementation detail. (Reinforces the underscore-is-convention item below.)
+
 - **2026-07-21 — Classes are toolboxes, not top-down scripts.** Long-standing mental block:
   expected data to "enter" a class and something to happen automatically, like a script running
   top to bottom. Correct model: a class body defines methods (tools on a shelf) but nothing

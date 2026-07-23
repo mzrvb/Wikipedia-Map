@@ -9,6 +9,55 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## 2026-07-23
+
+### Roadmap step 3 (graph model + contracts) complete
+
+`graph/contracts.py` (new) + `graph/model.py` (filled) + `tests/test_graph.py` (filled). 7 new
+tests, 21 fast green, ruff clean. No new deps.
+
+- **Contracts split into their own file, deviating from STATUS's prediction.** STATUS said `Step`
+  and `MoveEvaluation` would go *in* `model.py`. Put them in `graph/contracts.py` instead: the
+  contracts are consumed everywhere (algorithms emit `Step`, feedback emits `MoveEvaluation`, the
+  server serializes both, the frontend renders them), while the networkx wrapper is only *one*
+  consumer. Contracts import nothing from the project — they sit at the bottom of the dependency
+  stack and point at nobody, so nothing can create an import cycle through them.
+- **`Grade` is a `str`-Enum** so a member *is* its word (`Grade.BEST == "Best"`) and serializes to
+  JSON/SSE with zero conversion. Enum (not free strings) closes the set — a typo'd grade can't exist.
+  No thresholds live here; which grade a move earns stays behind contract 3 (feedback.py), per the
+  2026-07-23 scoring-model entry below.
+- **`MoveEvaluation.from_` carries a trailing underscore** because `from` is a Python keyword and
+  can't be a field name (PEP 8 convention). Maps back to a plain `"from"` key at serialization.
+- **`WikiGraph` wraps a `DiGraph`, not a `Graph`** — Wikipedia links are one-way, so edges are
+  directed and `neighbors()` returns successors (out-links) only. Same single-front-door rationale
+  as `WikiClient`/`Embedder`: one class owns the nx translation so the backend stays swappable.
+- Node identity is the page title string (matches the cache key in `wiki/` and `embed.py`), not a
+  wrapper object — one identity for a page everywhere.
+
+### Feedback scoring model worked out ahead of step 8 (no code yet)
+
+Conceptual session — no implementation shipped. Clarified how `feedback.py` (decision B,
+contract 3) will turn cosine similarity into chess-style grades, so step 8 doesn't re-derive it:
+
+- **One axis.** `eval(page) = cosine_similarity(embed(page), embed(target))`. A move's
+  `delta = eval(to) - eval(from)`; grading compares your delta to the best neighbor's:
+  `regret = best_delta - your_delta`.
+- **Five grades are regret bands.** Best/Good/Inaccuracy/Mistake/Blunder are one memoryless
+  computation bucketed by thresholds — no move history, no second metric.
+- **Brilliant is the deliberate special case.** Requires regret ≈ 0 AND a *second* axis test
+  (`cosine_similarity(link, from_page)` low = "looked unrelated but paid off"). Do NOT force all
+  six grades through one formula; Brilliant's surprise predicate lives as branching inside
+  `feedback.py`, which is exactly what contract 3 (feedback is the only grader) is protecting —
+  the mess stays in one module, downstream only sees the `Grade` enum.
+- **Reuse, not recompute.** Computing `best_delta` needs every neighbor's eval, which the
+  top-K cap (decision C) already embeds; embeddings are title-cached (step 2), so the grader
+  pays nothing extra. Threshold values for the bands are still TBD — placeholders when written.
+
+No files changed except LEARN.md and this entry. Step 3 (`graph/model.py`) remains next; its
+`Grade`/`MoveEvaluation` dataclasses are the contract surface this scoring logic will fill later.
+
+---
+
 ## 2026-07-21
 
 ### Roadmap step 2 (embeddings + scoring) complete
