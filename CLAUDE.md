@@ -27,11 +27,18 @@ holds `WikiGraph`, a thin `networkx.DiGraph` wrapper (directed — links are one
 is `apply(step)`. 21 fast tests green (7 new in `test_graph.py`), `ruff check` clean. No new deps —
 `networkx>=3.3` was already declared.
 
-**Roadmap step 4 (an algorithm emitting Steps) — next.** `algorithms/base.py` ABC plus the first
-Connect algorithm (`greedy`), reading knobs from `config` (contract 1) and yielding `Step`s (contract 2).
+**Roadmap step 4 (first algorithm emitting Steps) — done.** `config.py` gained the algorithm knobs
+(`TOP_K=20` locked, `MAX_DEPTH`/`MAX_NODES` placeholders). `algorithms/base.py` holds the
+`ConnectAlgorithm` ABC (Option A: caches injected in `__init__`, `run(seed, target) -> Iterator[Step]`).
+`algorithms/connect/greedy.py` implements `GreedyConnect` — greedy best-first, scoring links by cosine
+similarity to the target (decision C), capped to TOP_K, with a genuine `visited` check (the predecessor's
+dead loop guard, not ported). 30 fast tests green (9 new in `test_greedy.py`), `ruff check` clean. No new deps.
 
-Every other module under `src/wikimap/` beyond `wiki/`, `embed.py`, and `graph/` remains a placeholder
-holding only a docstring that states that file's responsibility.
+**Roadmap step 5 (the server: FastAPI + SSE) — next.** Stream a `GreedyConnect.run(...)` Step-by-Step
+over SSE to a static frontend; serve API and frontend together on localhost.
+
+Every other module under `src/wikimap/` beyond `wiki/`, `embed.py`, `graph/`, and `algorithms/` remains a
+placeholder holding only a docstring that states that file's responsibility (astar/bfs/explore not yet built).
 
 The authoritative plan remains `~/Downloads/wikimap_brief.md`.
 

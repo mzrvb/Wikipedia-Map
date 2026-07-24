@@ -11,6 +11,29 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ## 2026-07-23
 
+### Roadmap step 4 (first algorithm: greedy Connect) complete
+
+Built per the plan below. `config.py` (+3 knobs), `algorithms/base.py` (ABC filled),
+`algorithms/connect/greedy.py` (filled), `tests/test_greedy.py` (new, 9 tests). 30 fast green,
+ruff clean, no empty files. Notes worth keeping:
+
+- **Two "failures" on first run were both wrong test assertions, not code bugs** — a useful
+  reminder that a red test can mean the test mismodels correct behaviour. (1) A Step's `edges` are
+  score-ordered, so `edges[-1]` is the *worst* candidate, not the one greedy moved to — the committed
+  move is recorded in the note (`'B' -> 'D'`), so arrival is asserted there. (2) The dead-end Step
+  deliberately still emits the current page's fan-out, so that page *is* the source of a final tick —
+  `_move_sources` correctly includes it. Both fixed by correcting the expectation.
+- **The dead-end path is a real branch, not just the cap.** Greedy stops for three distinct reasons:
+  reached target (loop condition), hit MAX_DEPTH/MAX_NODES (cap note), or every top-K candidate already
+  visited (dead-end note). The last is exactly the case the visited check exists to survive — without
+  it greedy would ping-pong forever because a page's nearest neighbour is often the page just left.
+- **Seed is emitted as its own first Step** (before the loop) so it's born with real attrs; letting the
+  first tick's edges create it would leave a blank node (edges auto-create missing endpoints — see LEARN).
+- **`base.py` type-imports the caches under `TYPE_CHECKING`** so importing an algorithm doesn't drag in
+  wikipediaapi (via LinkCache/WikiClient) or trigger a model load. The ABC only stores what it's handed.
+
+Everything below in this entry is the pre-build plan, kept for the record.
+
 ### Step 4 (first algorithm) — design agreed, NOT yet built (paused mid-planning)
 
 Planning conversation only; no code written. Resume here next session. The plan:

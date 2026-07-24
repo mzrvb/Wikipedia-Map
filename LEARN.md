@@ -32,12 +32,26 @@ what's still shaky, what to revisit. Newest entries at the top of each section.
   they *replace* each other's `run`, they don't wrap. The server picks *which subclass to build*.
   Corrected mental model: not "layer 1 runs, layer 2 wraps" — it's "base *declares*, subclass
   *does*." Still shaky because I haven't written or subclassed an ABC by hand yet.
+  - **Follow-up (step 4 built):** now written by hand. Two things that only landed once it was real
+    code: (1) `@abstractmethod` genuinely bites — `test_base_cannot_be_instantiated` proves
+    `ConnectAlgorithm(None, None)` raises `TypeError`, so the "you can't instantiate the base" rule is
+    enforced by Python, not just convention. (2) The base can still hold *shared* concrete code — our
+    `__init__` (storing the two caches) lives on the base and subclasses inherit it; only `run` is
+    abstract. So an ABC isn't all-or-nothing "everything abstract"; it's "some shared, `run` mandated."
 
 - **2026-07-23 — Generators / `yield` = pause-and-resume, the engine behind contract 2.** An
   algorithm's `run` will `yield` one `Step` at a time and *pause*, instead of building a full list
   and `return`ing it. That's what lets the server stream each Step to the browser the instant it's
   produced (live graph building). A returned list would render nothing until the whole search
   finished. New syntax to get hands-on with in step 4; understood in principle, not yet by muscle.
+  - **Follow-up (step 4 built):** `GreedyConnect.run` is now a real generator — the tell is that its
+    body uses `yield` and never `return`s a value. Things that clicked writing it: (1) a `return`
+    inside a generator just *stops* it (ends the stream), it doesn't return data — used exactly that
+    to halt on dead-end/cap. (2) Nothing runs until you iterate: `list(algo.run(...))` in the tests is
+    what actually drives the search to completion; calling `.run()` alone would just build a paused
+    generator object and do zero work. (3) State declared before the loop (`visited`, `current`,
+    `depth`) persists *across* yields because the function is paused, not restarted — that persistence
+    is what makes the visited set work at all.
 
 - **Dependency injection vs "forced by architecture".** Understood that `LinkCache` receives
   an already-built `WikiClient` instance rather than constructing its own. Initially framed
