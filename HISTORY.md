@@ -11,6 +11,83 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ## 2026-07-23
 
+### Step 4 (first algorithm) — design agreed, NOT yet built (paused mid-planning)
+
+Planning conversation only; no code written. Resume here next session. The plan:
+
+**Files to touch:**
+- `config.py` — add the knobs greedy reads (currently only holds `EMBEDDING_MODEL`):
+  `TOP_K = 20` (decision C branching cap), `MAX_DEPTH` (hop limit), `MAX_NODES` (hard ceiling so
+  a bad run can't crawl forever). Values TBD — placeholders when written.
+- `algorithms/base.py` — the ABC `ConnectAlgorithm(ABC)`: `__init__(link_cache, embed_cache)`
+  stores the caches; `@abstractmethod def run(self, seed, target) -> Iterator[Step]` declares the
+  shape with an empty body. Declares only; executes nothing.
+- `algorithms/connect/greedy.py` — `GreedyConnect(ConnectAlgorithm)` implementing `run`.
+
+**Greedy loop (best-first on the semantic heuristic):** from `current = seed`, until
+`current == target` or MAX_DEPTH/MAX_NODES trips: (1) `link_cache.get_links(current)`;
+(2) score each link by `embed_cache.similarity(link, target)` — anchor is the **TARGET** per
+decision C (Explore will anchor to seed instead); (3) keep TOP_K by score; (4) filter out a
+real `visited` set; (5) pick the single best unvisited link; (6) `yield Step(nodes=[the K
+candidates], edges=[current->each], note=...)`; (7) mark visited, move `current`.
+
+**Two things explicitly NOT ported from `../Wikipedia Speedrun/greedy_search.py`:** its loop
+guard was dead code — we write a genuine `visited` check (greedy loops without it because the
+highest-similarity neighbor is often the page just left). This is the one bug we refuse to carry.
+
+**API shape — Option A, CONFIRMED.** Caches injected in `__init__`, job passed per call as
+`run(seed, target)`. The deciding reason is *not* the ABC tie-breaker first written here — it's
+that A is the **same dependency-injection shape the codebase already uses twice**: `LinkCache(client)`
+and `EmbeddingCache(embedder)` both take their dependency at construction and their job per call.
+A makes `ConnectAlgorithm` the third instance of that pattern. The ABC argument is real but
+secondary: we want a shared `run` contract across sibling algorithms (greedy/astar/bfs), and A is
+the form that makes the ABC pull its weight where B (a free `run(seed, target, link_cache, embed_cache)`
+function) would leave it decorative. Lifetime split is the substance: caches are long-lived and
+shared (constructor); seed/target are ephemeral, one pair per run (call). `base.py`'s abstract `run`
+body stays inert (`...`, never `yield`) so "declares nothing runs" holds; annotate with
+`collections.abc.Iterator`, not the deprecated `typing.Iterator` (we target 3.11+).
+
+**Verify:** `tests/test_greedy.py` with FAKE caches (canned links + scores, no network, no model)
+— asserts it reaches target on a toy graph, never revisits, respects TOP_K/MAX_DEPTH, yields
+well-formed Steps. Then `ruff check`, review `git diff`, commit. Same cadence as steps 1-3.
+
+### Open: user-facing tuning (physics + algorithm knobs) deferred until after MVP
+
+Decision by the user: do not build any user-editable settings UI until a full working MVP
+exists. Noted so it isn't picked up early. Two *distinct* kinds of knob, not to be blurred:
+
+- **Algorithm / expansion knobs** (depth, node caps, K=20, heuristic weights) — live in
+  `config.py` (contract 1) and change *which nodes/edges exist* (the structure Python emits).
+  Exposing these is Explore mode's whole purpose, so they're the likely first to become
+  user-editable.
+- **Physics knobs** (spring length, repulsion, gravity, settle speed) — pure vis-network
+  render config; change *how the same structure is posed on screen*, not what's in the graph.
+  Cheap to expose (vis-network surfaces them) but cosmetic — polish, not core.
+
+Keep the two separate in any future settings UI: algorithm knobs = "different graph", physics
+knobs = "same graph, restyled". Merging them into one undifferentiated panel would obscure the
+data-vs-rendering line, which is exactly what a tool meant to teach expansion-algorithm
+behavior must keep visible. Revisit once the MVP is running (step 5+ frontend).
+
+**User's intended shape for the algorithm-knob UI (2026-07-23):** a *pre-run* settings panel —
+before starting any mode (Explore / Connect-human / Connect-AI) the user edits depth, node caps,
+K, heuristic weights within ranges we define, then runs. Deliberately simpler than *live* tuning
+(no mid-search re-render). Two consequences worth recording now, though the UI is post-MVP:
+
+- **`config.py` owns both the default values AND their bounds.** The value (`K = 20`) is the knob;
+  the range (`K ∈ [1, 50]`, int) is metadata the frontend needs to render a valid slider and reject
+  bad input. Both live in config (contract 1) so nothing is hardcoded in the frontend either. **For
+  step 4 we write config as plain constants only** (values, no bounds yet) — decided with the user;
+  bounds are added when the panel is built, not before.
+- **Global-vs-per-run — the real trap.** Step 4 has greedy read `config.TOP_K` as a module global,
+  which is fine for a hardcoded value and fine while there's no server. But once a *user* sets K per
+  run, a mutated global is shared state: two concurrent runs (e.g. two browser tabs) would stomp each
+  other's settings — a genuine concurrency bug on a request-handling server, not a style nit. The
+  fix, when the panel lands, is a per-run `Params`/`Settings` object built from the request and passed
+  *into* `run(seed, target, params)`, superseding direct `config.*` reads. Not built now; recorded so
+  the "read config directly" step-4 choice isn't mistaken later for a decision that per-run params
+  were rejected. They weren't — they're just deferred with the UI.
+
 ### Roadmap step 3 (graph model + contracts) complete
 
 `graph/contracts.py` (new) + `graph/model.py` (filled) + `tests/test_graph.py` (filled). 7 new
