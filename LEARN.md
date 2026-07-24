@@ -6,7 +6,40 @@ what's still shaky, what to revisit. Newest entries at the top of each section.
 
 ## Struggling with / still shaky
 
-(nothing currently — move items here as they come up)
+_(2026-07-23 — flagged these while tired after building step 4; revisit fresh. Plain-English
+versions on purpose. Move up to "Refining" once they actually click.)_
+
+- **What `base.py` (the ABC) even is — a job description, not a worker.** It's a *template/promise*:
+  "every Connect algorithm MUST have a `run(seed, target)` that emits steps." It doesn't search
+  anything itself. Two syntax bits that confused me:
+  - **`if TYPE_CHECKING:` around some imports** = "only read these for labels, never actually run
+    them." Used to avoid loading heavy libraries (Wikipedia, the model) just to *name* a type. Cheap
+    file to import.
+  - **the empty `run` body is `...`** = "to be filled in by a real algorithm later." I deliberately
+    did NOT use `yield` there, because `yield` would turn the blank template into a real do-nothing
+    function. `...` keeps it a pure template.
+
+- **What `greedy.py` actually does (in words).** Start at the seed page → look at every page it links
+  to → score each by "how related does this feel to the target?" (cosine similarity, higher = closer)
+  → keep the best 20 → walk to the single best one I haven't visited → repeat until I hit the target
+  or give up. "Greedy" = always grab the best-looking option right now, never backtrack. (Analogy:
+  drive toward a mountain by always taking whichever road most points at it.)
+
+- **`yield` / generators — hand back answers one at a time.** A normal function does all its work then
+  returns ONE result at the end. `yield` lets a function pause and hand back results one by one
+  ("here's step 1"…pause…"here's step 2"…). That's what will let the graph draw *live* on screen later
+  instead of freezing until the search finishes. Still shaky — revisit when we wire the server (step 5),
+  where each `yield` becomes one thing sent to the browser.
+
+- **The `visited` set — why it's the important line.** `visited` is a bag of "pages I've already been
+  to." Greedy checks it before moving. Needed because the page that "feels closest" is often *the page
+  I just came from* (related pages score high for each other) — without the bag, greedy bounces between
+  two pages forever. This is the one real bug the old repo had.
+
+- **A failing test doesn't always mean the code is broken.** Two of my tests went red first try, but the
+  algorithm was FINE — my *tests* were checking the wrong thing (I looked at the last item in a
+  score-sorted list, which is the *worst* option, not where greedy actually walked). Fixed the test's
+  expectation, not the code. Lesson: when a test fails, look at *why* before assuming the code is wrong.
 
 ## Refining (mostly got it, some edge cases fuzzy)
 
