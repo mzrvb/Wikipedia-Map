@@ -12,8 +12,8 @@ Both modes build the graph live on screen as the search runs.
 
 ## Status
 
-Roadmap steps 1–4 done; **step 5 (server + live graph) is next.** 30 fast tests green,
-`ruff check` clean.
+**Working MVP.** Roadmap steps 1–5 done — you can run a Connect search in the browser and watch the
+graph build live. 38 fast tests green, `ruff check` clean.
 
 | Step | What | State |
 | --- | --- | --- |
@@ -21,7 +21,21 @@ Roadmap steps 1–4 done; **step 5 (server + live graph) is next.** 30 fast test
 | 2 | Embeddings — `embed.py`: cosine similarity, lazy-loaded model, cached by title | done |
 | 3 | Graph model + contracts — `graph/contracts.py` (`Step`, `Grade`, …), `graph/model.py` | done |
 | 4 | First Connect algorithm — `algorithms/base.py` ABC + `connect/greedy.py` | done |
-| 5 | FastAPI + SSE server streaming Steps to a vis-network frontend | next |
+| 5 | FastAPI + SSE server streaming Steps to a vis-network frontend | done |
+| 6 | Explore settings UI — knobs as live controls, `explore/` algorithms | next |
+
+Sample run — `Cat → Astronomy`, solved in 4 hops with the similarity score climbing each move:
+
+```
+start: 'Cat' (target 'Astronomy')
+'Cat' -> 'Science (journal)'        (score 0.460)
+'Science (journal)' -> 'Spiral nebulae'      (score 0.542)
+'Spiral nebulae' -> 'Galactic astronomy'     (score 0.794)
+'Galactic astronomy' -> 'Astronomy'          (score 1.000)
+```
+
+First run for a given page is slow (~80s here) — it fetches every link and embeds each one. The
+two-layer cache makes the same run near-instant afterwards (<0.01s).
 
 Everything under `src/wikimap/` beyond `wiki/`, `embed.py`, `graph/`, and `algorithms/` is still
 a placeholder — a module docstring stating that file's responsibility, no implementation.
@@ -49,11 +63,18 @@ pytest                  # tests
 ruff check .            # lint
 ```
 
-Once the server lands (roadmap step 5), it serves the API and the frontend together:
+The server serves the API and the frontend together — open <http://127.0.0.1:8000>, enter two page
+titles, press Run:
 
 ```powershell
 uvicorn wikimap.server.app:app --reload
 ```
+
+| Endpoint | What |
+| --- | --- |
+| `GET /` | The frontend (form, graph canvas, run log) |
+| `GET /api/connect?seed=&target=` | SSE stream — one `step` event per algorithm tick |
+| `GET /api/config` | The knobs, read-only (contract 1: the frontend never hardcodes them) |
 
 ## Layout
 

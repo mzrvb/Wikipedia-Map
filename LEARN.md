@@ -60,6 +60,15 @@ _(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood
     generator object and do zero work. (3) State declared before the loop (`visited`, `current`,
     `depth`) persists *across* yields because the function is paused, not restarted — that persistence
     is what makes the visited set work at all.
+  - **Follow-up (step 5 built, 2026-07-25) — this is the payoff the entry above was waiting for.**
+    The generator now runs as a *chain*: `GreedyConnect.run` yields a Step → `_stream` yields an SSE
+    frame → Starlette writes it to the socket → the browser paints it → and only *then* does the
+    search resume for the next tick. Nothing is collected into a list at any layer, which is the
+    entire reason the graph grows on screen instead of appearing at the end. Proof it's genuinely
+    incremental, not just theoretically so: a cold `Banana → Quantum mechanics` run delivered frames
+    at +0.00s, +5.71s, +6.27s, +10.17s. A *warm* run finished in <0.01s and delivered everything at
+    once — same code, and it proves nothing about streaming. **Caching can hide the very behaviour
+    you're trying to observe; test streaming on cold data.**
 
 - **Dependency injection vs "forced by architecture".** Understood that `LinkCache` receives
   an already-built `WikiClient` instance rather than constructing its own. Initially framed
@@ -70,6 +79,41 @@ _(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood
   wiring, where the shared-instance argument will matter more concretely.
 
 ## Understood (apprehended, for reference)
+
+- **2026-07-25 — SSE is a text format, not a library. Level 1: it's an HTTP response that never
+  ends.** Normal request/response = browser asks, server answers once, connection closes. SSE = the
+  server keeps the connection open and dribbles messages down it until it's done. **Level 2 — the
+  entire wire format** is three lines per message, and the *blank line is the protocol*:
+  ```
+  event: step
+  data: {"nodes": [...], "edges": [...], "note": "..."}
+              <- this blank line is what says "message over, deliver it"
+  ```
+  Omit the trailing `\n\n` and the browser sits waiting for a message it already has. **Level 3 —
+  the browser side is one built-in object**: `new EventSource(url)`, then
+  `.addEventListener("step", ...)` per event name — which is *why* the server bothers writing the
+  `event:` line, since without it everything arrives as generic `"message"`. **Level 4 — why not
+  WebSockets** (the locked stack decision): SSE is one-way and that's all Connect needs — the server
+  pushes Steps, the browser never replies mid-run. SSE is plain HTTP with auto-reconnect built in;
+  WebSockets buy bidirectionality we don't use. Gotcha worth remembering: that auto-reconnect will
+  silently *re-run the whole search* on a dropped connection unless you `.close()` the source.
+
+- **2026-07-25 — Sync vs async generator: which one blocks the server.** Wrote `_stream` as a plain
+  `def` (not `async def`) on purpose. If a route is `async` and its body does something *blocking*
+  (our Wikipedia fetch, the model forward pass), it freezes the whole event loop — one search would
+  make the entire server unresponsive to everyone. Handing Starlette a **sync** iterator makes it
+  run the iteration in a background threadpool instead, which is the right home for blocking work.
+  Rule of thumb: **`async` is only a win when the work actually awaits (real async I/O); wrapping
+  blocking code in `async` makes it worse, not better.** Our fetch layer is deliberately synchronous
+  (CLAUDE.md), so sync generator is the honest choice — revisit if we ever move to async httpx.
+
+- **2026-07-25 — Testing with fakes proves wiring; only a live run proves it works.** The 8 server
+  tests all passed while the app had never once talked to Wikipedia — they substitute a fake
+  algorithm, so they prove the *plumbing* (routes exist, one SSE frame per Step, errors arrive
+  in-band) and nothing about whether a real search succeeds. Both kinds matter and neither replaces
+  the other: the fakes stay fast and run every time; the live run is what turns "green" into
+  "working". Related trap from the same session: **a warm cache can hide the behaviour you're
+  testing** (see the generators follow-up above).
 
 - **2026-07-25 — ABCs, finally. Written in ascending levels because that's what made it land.**
   (Replaces the earlier ABC notes, which were technically right but started at the wrong altitude —

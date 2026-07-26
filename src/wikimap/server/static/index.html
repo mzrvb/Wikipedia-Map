@@ -1,15 +1,43 @@
 <!doctype html>
 <!-- Mode switcher (Explore | Connect) + graph canvas + settings panel.
-     Settings panel is generated from config so knobs stay in one place. -->
+     Settings panel is generated from config so knobs stay in one place.
+     Step 5 (MVP): Connect only, knobs read-only from /api/config. -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>wikimap</title>
     <link rel="stylesheet" href="style.css" />
+    <!-- vis-network from a CDN: the locked stack says "no build step", and a script
+         tag is how you get a library without one. Needs internet on first load
+         (so does Wikipedia, so this costs no extra capability). -->
+    <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
   </head>
   <body>
-    <!-- scaffold: built in roadmap step 5 -->
+    <header>
+      <h1>wikimap</h1>
+      <span class="mode">Connect — greedy</span>
+    </header>
+
+    <form id="run-form">
+      <label>
+        From
+        <input id="seed" name="seed" value="Cat" required maxlength="200" />
+      </label>
+      <label>
+        To
+        <input id="target" name="target" value="Astronomy" required maxlength="200" />
+      </label>
+      <button id="run" type="submit">Run</button>
+      <button id="stop" type="button" disabled>Stop</button>
+      <span id="knobs" class="knobs"></span>
+    </form>
+
+    <main>
+      <div id="graph"></div>
+      <aside id="log" aria-live="polite"></aside>
+    </main>
+
     <script src="app.js"></script>
   </body>
 </html>

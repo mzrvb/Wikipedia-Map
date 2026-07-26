@@ -1,1 +1,111 @@
 /* Layout for the mode switcher, graph canvas, and settings panel. */
+
+:root {
+  --bg: #14161c;
+  --panel: #1c1f27;
+  --line: #2b2f3a;
+  --text: #e8e8ea;
+  --muted: #8b90a0;
+  --accent: #f0b429;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+header h1 { margin: 0; font-size: 16px; letter-spacing: 0.02em; }
+header .mode { color: var(--muted); font-size: 12px; }
+
+#run-form {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+#run-form label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+#run-form input {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 14px;
+  min-width: 180px;
+}
+
+#run-form input:focus { outline: 1px solid var(--accent); }
+
+#run-form button {
+  background: var(--accent);
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 16px;
+  font-weight: 600;
+  color: #1a1a1a;
+  cursor: pointer;
+}
+
+#run-form button#stop { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+#run-form button:disabled { opacity: 0.45; cursor: default; }
+
+.knobs { margin-left: auto; color: var(--muted); font-size: 12px; }
+
+main {
+  flex: 1;
+  display: flex;
+  min-height: 0; /* lets the flex children scroll instead of overflowing the page */
+}
+
+#graph { flex: 1; min-width: 0; }
+
+#log {
+  width: 340px;
+  border-left: 1px solid var(--line);
+  padding: 12px;
+  overflow-y: auto;
+  background: var(--panel);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+#log .entry {
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  word-break: break-word;
+}
+
+#log .entry.status { color: var(--muted); }
+#log .entry.failure { color: #f87171; }
+
+@media (max-width: 800px) {
+  main { flex-direction: column; }
+  #log { width: auto; height: 200px; border-left: 0; border-top: 1px solid var(--line); }
+}

@@ -11,6 +11,49 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ## 2026-07-25
 
+### Roadmap step 5 (server + SSE + live frontend) complete — MVP works end-to-end
+
+`server/app.py` filled, `static/{index.html,app.js,style.css}` filled, `tests/test_server.py` new
+(8 tests). 38 fast green, ruff clean, no empty files. Decisions worth keeping:
+
+- **`_stream` is a sync generator, not `async def`.** The fetch layer is deliberately synchronous
+  (CLAUDE.md), so an async route would block the event loop on every Wikipedia call. Handing
+  Starlette a *sync* iterator makes it iterate in a threadpool instead — correct for blocking work
+  and free at MVP scale. Revisit only if the async httpx upgrade path is ever taken.
+- **Caches built once and lazily** — `@lru_cache(maxsize=1)` on a no-arg `_algorithm()`, imports
+  inside the function. Once because a shared `LinkCache` across requests is the entire point of
+  having a cache; lazily because eager construction would demand `USER_AGENT` and load an ~80MB
+  model merely to import the module, which would have made the test suite slow and fragile.
+  `_algorithm()` is annotated as the ABC, not `GreedyConnect` — swapping in A* is a one-line change.
+- **Errors must be reported in-band.** Once streaming starts the status line is already sent, so a
+  mid-run exception cannot become a 500. `_stream` catches, logs the traceback server-side, and
+  emits an `error` event; `test_connect_reports_algorithm_failure_in_band` pins this. Without it a
+  crashed run is indistinguishable from a hang.
+- **`StaticFiles` mounted last, at `/`.** Mount order is match order, so `/api/*` wins and
+  everything else falls through to a file. Same origin for API and frontend means no CORS config.
+- **vis-network via CDN `<script>`.** The locked stack says no build step; a script tag is how you
+  get a library without one. Needs internet on first load, which costs nothing extra given the app
+  already requires it for Wikipedia.
+- **Frontend writes titles with `textContent`, never `innerHTML`.** Page titles are third-party
+  strings landing in the DOM. vis-network labels are canvas-drawn and safe by construction, so the
+  run-log panel is the only place raw titles meet the DOM — and it uses `textContent`.
+
+**Verified live, not just unit-tested** (the distinction that matters — fakes prove wiring, not
+that it works): `Cat → Astronomy` in 4 hops via `Science (journal)` → `Spiral nebulae` →
+`Galactic astronomy`, score 0.460 → 0.542 → 0.794 → 1.000, 81 nodes / 80 edges, top-K exactly 20
+per tick. Incremental delivery confirmed on a cold `Banana → Quantum mechanics` run (frames at
++0.00 / +5.71 / +6.27 / +10.17s) — a warm run finishes too fast to demonstrate streaming at all,
+which is itself worth remembering when testing this later. Cold ~80s, warm <0.01s.
+
+**Known rough edges, deliberately not fixed tonight** (MVP first):
+- Embedding is one title at a time — ~300 sequential `encode()` calls per hop dominate the cold
+  runtime. Batching via `model.encode(list)` is the obvious win and belongs in `embed.py`.
+- Greedy's score can *drop* between hops (Banana run went 0.307 → 0.287). Correct behaviour, not a
+  bug: greedy picks the best of the *current* page's neighbours, which may be worse than where it
+  already stands. This is exactly the regret that step 8's grading will quantify.
+- No stop-the-run-server-side: the browser's Stop button closes the EventSource, but the generator
+  keeps running to completion. Harmless at these depths; fix when Explore makes runs longer.
+
 ### CLAUDE.md gains a teaching-format rule: explain complex concepts in ascending levels
 
 No code changed. Session was spent re-teaching ABCs (the concept `LEARN.md` had flagged as

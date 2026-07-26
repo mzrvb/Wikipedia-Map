@@ -34,11 +34,29 @@ is `apply(step)`. 21 fast tests green (7 new in `test_graph.py`), `ruff check` c
 similarity to the target (decision C), capped to TOP_K, with a genuine `visited` check (the predecessor's
 dead loop guard, not ported). 30 fast tests green (9 new in `test_greedy.py`), `ruff check` clean. No new deps.
 
-**Roadmap step 5 (the server: FastAPI + SSE) — next.** Stream a `GreedyConnect.run(...)` Step-by-Step
-over SSE to a static frontend; serve API and frontend together on localhost.
+**Roadmap step 5 (the server: FastAPI + SSE) — done. MVP is working end-to-end.** `server/app.py`
+holds the app: `GET /api/connect?seed=&target=` streams `GreedyConnect.run(...)` as SSE (one `step`
+frame per tick, plus `status`/`error`/`done`), `GET /api/config` exposes the knobs read-only, and
+`StaticFiles(html=True)` is mounted last at `/` so API routes match first and the frontend shares
+one origin (no CORS). The caches are built **once and lazily** via `@lru_cache(maxsize=1)` on
+`_algorithm()` — lazily so importing the module needs neither `USER_AGENT` nor the model, which is
+what keeps the tests fast. `_stream` is a **sync** generator on purpose: the fetch layer is
+synchronous, so Starlette runs it in a threadpool instead of blocking the event loop. Frontend is
+`static/{index.html,app.js,style.css}` — vanilla JS, vis-network via CDN script tag, no build step.
+38 fast tests green (8 new in `test_server.py`), `ruff check` clean. No new deps.
 
-Every other module under `src/wikimap/` beyond `wiki/`, `embed.py`, `graph/`, and `algorithms/` remains a
-placeholder holding only a docstring that states that file's responsibility (astar/bfs/explore not yet built).
+Proven live, not just unit-tested: `Cat → Astronomy` solved in 4 hops
+(`Science (journal)` → `Spiral nebulae` → `Galactic astronomy`), score climbing 0.460 → 1.000, 81
+nodes / 80 edges, top-K holding at exactly 20 per tick. Frames arrive **incrementally** (a cold
+`Banana → Quantum mechanics` run delivered at +0.00/+5.71/+6.27/+10.17s), which is the live-drawing
+guarantee. Cold run ~80s, warm re-run <0.01s — the two-layer cache doing its job.
+
+**Roadmap step 6 (Explore settings UI) — next.** Wire the config knobs to frontend controls and add
+`explore/` (brief §6 step 4, skipped — see HISTORY) so the sphere can be grown and reshaped live.
+
+Every other module under `src/wikimap/` beyond `wiki/`, `embed.py`, `graph/`, `algorithms/`, and
+`server/` remains a placeholder holding only a docstring that states that file's responsibility
+(astar/bfs/explore not yet built).
 
 The authoritative plan remains `~/Downloads/wikimap_brief.md`.
 
