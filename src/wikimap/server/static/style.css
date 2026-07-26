@@ -63,6 +63,16 @@ header .mode { color: var(--muted); font-size: 12px; }
 
 #run-form input:focus { outline: 1px solid var(--accent); }
 
+#run-form select {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 14px;
+}
+#run-form select:disabled { opacity: 0.45; }
+
 #run-form button {
   background: var(--accent);
   border: 0;
@@ -73,69 +83,14 @@ header .mode { color: var(--muted); font-size: 12px; }
   cursor: pointer;
 }
 
-#run-form button#stop { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+#run-form button#stop,
+#run-form button.ghost {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+#run-form button.ghost { margin-left: auto; }
 #run-form button:disabled { opacity: 0.45; cursor: default; }
-
-/* Settings row. Shares #run-form's control styling but with narrow numeric inputs,
-   so the knobs read as secondary to the seed/target the run is actually about. */
-#settings {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  flex-wrap: wrap;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.015);
-}
-
-#settings label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-#settings input {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 5px 8px;
-  color: var(--text);
-  font-size: 13px;
-  width: 78px;
-}
-
-#settings input:focus { outline: 1px solid var(--accent); }
-#settings input:disabled { opacity: 0.4; }
-/* Knob exists but the selected algorithm ignores it. */
-#settings label.inactive { opacity: 0.35; }
-
-#run-form select {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 6px 10px;
-  color: var(--text);
-  font-size: 14px;
-}
-#run-form select:disabled { opacity: 0.45; }
-#settings small { color: var(--muted); font-size: 11px; text-transform: none; letter-spacing: 0; }
-
-#settings button {
-  margin-left: auto;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 5px 12px;
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-#settings button:disabled { opacity: 0.45; cursor: default; }
 
 main {
   flex: 1;
@@ -143,8 +98,109 @@ main {
   min-height: 0; /* lets the flex children scroll instead of overflowing the page */
 }
 
-#graph { flex: 1; min-width: 0; }
+/* position: relative so the settings panel can float over the canvas the way
+   Obsidian's does, instead of stealing horizontal space from the graph. */
+#graph { flex: 1; min-width: 0; position: relative; }
 
+/* --- settings panel ------------------------------------------------------ */
+#panel {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+  width: 250px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 4px 12px 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+#panel.hidden { display: none; }
+
+#panel details { border-bottom: 1px solid var(--line); padding: 8px 0; }
+#panel details:last-of-type { border-bottom: 0; }
+
+#panel summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text);
+  padding: 4px 0;
+}
+
+#panel .hint {
+  margin: 2px 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+#panel label {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+#panel label span { display: block; margin-bottom: 4px; }
+
+/* Checkbox and select rows read better on one line than stacked. */
+#panel label.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+#panel label.row span { margin-bottom: 0; }
+
+#panel input[type="number"],
+#panel select {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+#panel label.row select { width: auto; }
+
+#panel input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+#panel input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+
+#panel input:focus { outline: 1px solid var(--accent); }
+#panel input:disabled { opacity: 0.4; }
+
+#panel small { color: var(--muted); font-size: 10px; }
+
+/* Knob exists but the selected algorithm ignores it. */
+#panel label.inactive { opacity: 0.35; }
+
+#panel button {
+  width: 100%;
+  margin-top: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+#panel button:hover:not(:disabled) { border-color: var(--accent); }
+#panel button:disabled { opacity: 0.4; cursor: default; }
+
+/* --- run log ------------------------------------------------------------- */
 #log {
   width: 340px;
   border-left: 1px solid var(--line);
@@ -167,4 +223,5 @@ main {
 @media (max-width: 800px) {
   main { flex-direction: column; }
   #log { width: auto; height: 200px; border-left: 0; border-top: 1px solid var(--line); }
+  #panel { width: 210px; }
 }

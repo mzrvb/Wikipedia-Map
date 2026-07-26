@@ -34,6 +34,13 @@ is `apply(step)`. 21 fast tests green (7 new in `test_graph.py`), `ruff check` c
 similarity to the target (decision C), capped to TOP_K, with a genuine `visited` check (the predecessor's
 dead loop guard, not ported). 30 fast tests green (9 new in `test_greedy.py`), `ruff check` clean. No new deps.
 
+**Graph display settings — done.** A floating panel over the canvas with three sections: Search
+(server-owned, from `/api/config`), Display, and Forces (both browser-owned, persisted in
+`localStorage`). Display controls are read generically — every one carries `data-display` and an id of
+`d-<key>`, so adding a control means adding HTML and nothing else. Nodes carry `score`/`depth` as
+DataSet fields so "colour by" can recolour without re-searching, and Replay re-applies the recorded
+Step stream on a timer. **No server changes** — the 77 tests were untouched.
+
 **`connect/astar.py` — done.** Weighted A*: `f = g + W * h` with `h = hop_scale * (1 - cosine)`, a
 `heapq` frontier, and `came_from` path reconstruction. The rescale is load-bearing — `g` counts hops,
 so raw cosine added to it can never outweigh one hop and A* would silently degrade to BFS. `W` spans
@@ -89,6 +96,12 @@ each new Connect algorithm proves the shared pieces before Explore inherits them
    answer "did greedy miss a shorter route"). `LinkCache.get_backlinks` (done, 2026-07-26) is the
    data layer it needs.
 3. **Explore** (`explore/bfs.py`, `explore/beam.py`) only once Connect is complete.
+
+**Where a knob lives — `config.py` vs the frontend.** Contract 1 covers *search* knobs: anything that
+changes what the algorithm does. **Display knobs (node size, arrows, physics forces, colours) live in
+the frontend and `localStorage`, never in `config.py` or `/api/config`** — they cannot reach the
+algorithm, and serving them would give the backend an opinion about drawing, which is contract 2
+violated in reverse. Rule: *changes the SEARCH → `config.py`; changes the PICTURE → frontend.*
 
 **Every step must be non-destructive:** existing tests stay green without being edited, new
 parameters arrive with defaults, `/api/config` only gains fields, existing URLs keep working.

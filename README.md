@@ -13,8 +13,19 @@ Both modes build the graph live on screen as the search runs.
 ## Status
 
 **Working MVP with live settings and two algorithms.** Roadmap steps 1–6 done, plus Connect's A* —
-run a search in the browser, watch the graph build live, switch algorithms, and change the knobs
-between runs. 77 fast tests green, `ruff check` clean.
+run a search in the browser, watch the graph build live, switch algorithms, tune the search knobs,
+and reshape the rendering (node size, forces, colour-by) from a settings panel. 77 fast tests green,
+`ruff check` clean.
+
+Settings come in two kinds, and the split is deliberate:
+
+| | Owned by | Changes | Stored in |
+| --- | --- | --- | --- |
+| **Search** — top-K, max depth, max nodes, weight W, hop scale | `config.py` | what the algorithm does | server; sent as query params |
+| **Display / Forces** — node size, arrows, physics, colour-by | the browser | how the graph is drawn | `localStorage` |
+
+A physics slider can never reach the algorithm, so it never goes near `config.py`. The rule:
+*changes the search → `config.py`; changes the picture → frontend.*
 
 | Step | What | State |
 | --- | --- | --- |

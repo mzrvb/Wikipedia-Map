@@ -11,6 +11,46 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ## 2026-07-26
 
+### Graph display settings — and the line between server knobs and browser knobs
+
+Added an Obsidian-style floating settings panel over the graph canvas: arrows toggle, text fade
+threshold, node size, link thickness, colour-by, replay, plus the four force-directed physics
+sliders (centre / repel / link force / link distance) and a physics on-off escape hatch.
+
+**The decision worth recording is where these live: the frontend, NOT `config.py`.** Contract 1 says
+config owns every knob, which reads like it should cover these too. It doesn't, and the reasoning is
+the reason contract 2 exists:
+
+- A spring constant never reaches the server and cannot change what the algorithm does. Contract 1's
+  purpose is that *algorithms* never hardcode *their* settings; its examples are all search knobs.
+- Serving render settings from `/api/config` would give the backend an opinion about drawing —
+  the same layering violation as an algorithm knowing about the renderer, just pointed the other way.
+- They are per-browser preferences, so they belong in `localStorage`, which the server cannot own.
+
+**Rule adopted: if it changes the SEARCH it lives in `config.py`; if it changes the PICTURE it lives
+in the frontend.** The panel makes that split visible — three sections, with the Search section
+labelled "sent to the server" and the others "browser only".
+
+Implementation notes:
+
+- **Controls are read generically.** Every display input carries `data-display` and an id of
+  `d-<key>`; `readDisplay()` walks them and builds the settings object from the DOM. Adding a control
+  is adding HTML — no second place to register it.
+- **Repel slider is negated in JS.** vis-network wants a *negative* `gravitationalConstant` for
+  repulsion; a slider that moves right for "more repel" is the only sane control, so the sign flip
+  lives at the boundary.
+- **Text fade has no vis-network option.** Implemented as a `zoom` listener that sets the global font
+  size to 0 below the threshold — one option write rather than N DataSet updates.
+- **Nodes now carry `score` and `depth` as DataSet fields.** vis-network ignores keys it doesn't
+  recognise, which makes a DataSet item a fine place to park real data — and it is what lets
+  "colour by depth" recolour an existing graph without re-running the search.
+- **Replay is close to free.** The algorithm already emits a recorded Step stream, so animating the
+  build is the same steps on a different clock. Obsidian has to synthesise this; we had the data.
+
+**Zero server changes**, so the 77 tests were untouched and still pass. Verified by cross-checking
+every `getElementById` in `app.js` against the ids `index.html` defines (no mismatches), `node
+--check` on the JS, and fetching the served page.
+
 ### `connect/astar.py` complete — and it beat greedy on the first real run
 
 `AStarConnect` implements weighted A*: `f = g + W * h`, `h = hop_scale * (1 - cosine(page, target))`.

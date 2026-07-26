@@ -95,6 +95,40 @@ _(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood
 
 ## Understood (apprehended, for reference)
 
+- **2026-07-26 — "Config owns every knob" has a boundary: search knobs vs display knobs.**
+  Adding the Obsidian-style graph panel raised a question contract 1 seemed to have already answered:
+  do node size and physics forces belong in `config.py` like `TOP_K` does? **No** — and working out
+  why sharpened what contract 1 is actually for. The test: **can this setting change what the
+  algorithm does?** `TOP_K` changes which pages get searched. A spring constant changes where a dot
+  sits on screen and *cannot reach the algorithm at all*. So:
+  - Contract 1 exists so **algorithms** don't hardcode **their** settings. Its examples are all
+    search knobs; a render setting was never in scope.
+  - Putting them in `/api/config` would give the **server an opinion about drawing** — which is
+    contract 2 ("algorithms never draw") violated from the other direction. The backend not knowing
+    the renderer exists has to cut both ways.
+  - They're per-person preferences, so `localStorage` is their natural home, and the server can't
+    own that anyway.
+  **Rule kept: changes the SEARCH → `config.py`; changes the PICTURE → frontend.** General lesson
+  worth more than this instance: *"everything in one place" rules always have a scope, and finding
+  the boundary means asking what the rule was protecting against, not applying it literally.*
+
+- **2026-07-26 — Data-driven UI: name a convention once instead of listing controls twice.**
+  Ten display controls could each have been wired by hand (`document.getElementById("d-nodeSize")`,
+  read it, apply it — ten times, in three places each). Instead every control carries a
+  `data-display` attribute and an id of `d-<key>`, and the JS does:
+  ```js
+  const displayInputs = [...document.querySelectorAll("[data-display]")];
+  const key = el.id.slice(2);          // "d-nodeSize" -> "nodeSize"
+  ```
+  So **adding a control means adding HTML and nothing else** — no second registration list to forget.
+  Same instinct as `LinkCache._lookup` taking the fetch function instead of a direction flag, and as
+  `/api/config` publishing bounds so the frontend never hardcodes a range: *when the same fact would
+  otherwise be written in two places, find the convention that lets it be written once.*
+  Two details that made it work: `[...querySelectorAll(...)]` spreads a NodeList into a real array
+  (NodeList has `forEach` but not `map`/`filter`), and reading defaults from the HTML **before**
+  loading `localStorage` is what makes a "Reset" button possible — the markup is the record of what
+  default meant.
+
 - **2026-07-26 — A*, in ascending levels. Level 1: it's greedy that also counts its steps.**
   Greedy asks one question — *which neighbour looks closest to the target?* A* asks a second —
   *and how far have I already walked?* **Level 2 — why that matters:** greedy will cheerfully take

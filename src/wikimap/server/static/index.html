@@ -1,9 +1,19 @@
 <!doctype html>
 <!-- Mode switcher (Explore | Connect) + graph canvas + settings panel.
-     Settings panel is generated from config so knobs stay in one place.
-     Step 6: Connect only, knobs are now live controls. Their VALUES and their
-     min/max both come from /api/config — nothing here hardcodes a number, so
-     changing config.py moves the sliders without touching this file. -->
+
+     The settings panel has three sections, and the split between them is the
+     architecture, not just tidiness:
+
+       Search  - owned by the SERVER (config.py). Values and bounds both come from
+                 /api/config; nothing here hardcodes a number. These change what the
+                 algorithm does, so they travel to the backend as query params.
+       Display - owned by the BROWSER. Node size, arrows, colours. These never reach
+                 the server: they change how the graph is drawn, and contract 2 says
+                 the backend has no opinion about drawing. Persisted in localStorage.
+       Forces  - also browser-owned. vis-network's force-directed physics.
+
+     Rule of thumb: if it changes the SEARCH it lives in config.py; if it changes the
+     PICTURE it lives here. -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -38,44 +48,111 @@
       </label>
       <button id="run" type="submit">Run</button>
       <button id="stop" type="button" disabled>Stop</button>
-    </form>
-
-    <!-- Settings. Empty on purpose: app.js fills in value/min/max from /api/config
-         so the browser never holds its own copy of a knob (contract 1). -->
-    <form id="settings">
-      <label>
-        top-K
-        <input id="top_k" name="top_k" type="number" disabled />
-        <small id="top_k-range"></small>
-      </label>
-      <label>
-        max depth
-        <input id="max_depth" name="max_depth" type="number" disabled />
-        <small id="max_depth-range"></small>
-      </label>
-      <label>
-        max nodes
-        <input id="max_nodes" name="max_nodes" type="number" disabled />
-        <small id="max_nodes-range"></small>
-      </label>
-      <!-- A*-only. W=0 orders purely by hops (breadth-first); W very large ignores
-           hops (greedy). The whole spectrum lives on this one control. -->
-      <label class="astar-only">
-        weight W
-        <input id="heuristic_weight" name="heuristic_weight" type="number" step="0.5" disabled />
-        <small id="heuristic_weight-range"></small>
-      </label>
-      <!-- Converts cosine into hops so g and h are the same unit — see astar.py. -->
-      <label class="astar-only">
-        hop scale
-        <input id="hop_scale" name="hop_scale" type="number" step="0.5" disabled />
-        <small id="hop_scale-range"></small>
-      </label>
-      <button id="reset-knobs" type="button" disabled>Reset</button>
+      <button id="toggle-panel" type="button" class="ghost">Settings</button>
     </form>
 
     <main>
-      <div id="graph"></div>
+      <div id="graph">
+        <div id="panel">
+          <details open>
+            <summary>Search</summary>
+            <p class="hint">Sent to the server. Changes what the algorithm does.</p>
+            <!-- Inputs ship with no value/min/max and disabled on purpose: app.js
+                 fills them from /api/config so the browser never holds its own copy
+                 of a number that lives in config.py (contract 1). -->
+            <label>
+              <span>top-K</span>
+              <input id="top_k" name="top_k" type="number" disabled />
+              <small id="top_k-range"></small>
+            </label>
+            <label>
+              <span>max depth</span>
+              <input id="max_depth" name="max_depth" type="number" disabled />
+              <small id="max_depth-range"></small>
+            </label>
+            <label>
+              <span>max nodes</span>
+              <input id="max_nodes" name="max_nodes" type="number" disabled />
+              <small id="max_nodes-range"></small>
+            </label>
+            <!-- A*-only. W=0 orders purely by hops (breadth-first); W very large
+                 ignores hops (greedy). The whole spectrum lives on this control. -->
+            <label class="astar-only">
+              <span>weight W</span>
+              <input id="heuristic_weight" name="heuristic_weight" type="number" step="0.5" disabled />
+              <small id="heuristic_weight-range"></small>
+            </label>
+            <!-- Converts cosine into hops so g and h share a unit — see astar.py. -->
+            <label class="astar-only">
+              <span>hop scale</span>
+              <input id="hop_scale" name="hop_scale" type="number" step="0.5" disabled />
+              <small id="hop_scale-range"></small>
+            </label>
+            <button id="reset-knobs" type="button" disabled>Reset search knobs</button>
+          </details>
+
+          <details open>
+            <summary>Display</summary>
+            <p class="hint">Browser only. Never sent anywhere.</p>
+            <label class="row">
+              <span>Arrows</span>
+              <input id="d-arrows" type="checkbox" data-display checked />
+            </label>
+            <label>
+              <span>Text fade threshold</span>
+              <input id="d-labelZoom" type="range" data-display min="0" max="2" step="0.05" value="0.4" />
+            </label>
+            <label>
+              <span>Node size</span>
+              <input id="d-nodeSize" type="range" data-display min="4" max="40" step="1" value="12" />
+            </label>
+            <label>
+              <span>Link thickness</span>
+              <input id="d-linkWidth" type="range" data-display min="0.2" max="5" step="0.1" value="1" />
+            </label>
+            <label class="row">
+              <span>Colour by</span>
+              <!-- Only possible because Steps carry real data: every node knows its
+                   cosine score AND its depth from the seed. -->
+              <select id="d-colorBy" data-display>
+                <option value="score">similarity</option>
+                <option value="depth">depth</option>
+              </select>
+            </label>
+            <button id="replay" type="button" disabled>Replay build</button>
+          </details>
+
+          <details>
+            <summary>Forces</summary>
+            <p class="hint">vis-network physics. Applied live.</p>
+            <label class="row">
+              <span>Physics</span>
+              <!-- Escape hatch: force-directed layout on hundreds of nodes can get
+                   janky. Turning it off freezes positions and costs nothing. -->
+              <input id="d-physics" type="checkbox" data-display checked />
+            </label>
+            <label>
+              <span>Center force</span>
+              <input id="d-centralGravity" type="range" data-display min="0" max="0.5" step="0.005" value="0.01" />
+            </label>
+            <label>
+              <span>Repel force</span>
+              <!-- Slider is the MAGNITUDE; vis-network wants it negative, so app.js
+                   negates. A slider that goes right for "more repel" is the sane UI. -->
+              <input id="d-repel" type="range" data-display min="0" max="250" step="5" value="45" />
+            </label>
+            <label>
+              <span>Link force</span>
+              <input id="d-springConstant" type="range" data-display min="0" max="0.4" step="0.005" value="0.08" />
+            </label>
+            <label>
+              <span>Link distance</span>
+              <input id="d-springLength" type="range" data-display min="20" max="400" step="5" value="110" />
+            </label>
+            <button id="reset-display" type="button">Reset display</button>
+          </details>
+        </div>
+      </div>
       <aside id="log" aria-live="polite"></aside>
     </main>
 

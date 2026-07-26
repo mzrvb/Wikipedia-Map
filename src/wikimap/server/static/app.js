@@ -1,6 +1,12 @@
 // vis-network setup, SSE client, and mode controls.
 // Applies incoming Steps to the graph as they arrive — this is what makes the
 // graph build live on screen. No search logic here; the server sends Steps.
+//
+// Two kinds of setting live in this file and they are deliberately separate:
+//   - SEARCH knobs are the server's (config.py). Fetched from /api/config, sent back
+//     as query params, never stored here.
+//   - DISPLAY knobs are the browser's. They never touch the network; contract 2 says
+//     the backend has no opinion about drawing. Stored in localStorage.
 
 // --- graph -----------------------------------------------------------------
 // DataSet is vis-network's observable collection: the network redraws itself when
@@ -50,11 +56,14 @@ function applyStep(step, seed, target) {
       id: node.id,
       label: node.id,
       title: node.score == null ? node.id : `${node.id} — score ${node.score.toFixed(3)}`,
-      // Warmer = closer to the target. score is cosine similarity in [-1, 1];
-      // clamp to [0, 1] and use it as a hue ramp from slate to gold.
-      color: isSeed ? "#4ade80" : isTarget ? "#f472b6" : scoreColor(node.score),
-      size: isSeed || isTarget ? 20 : 12,
+      color: isSeed ? "#4ade80" : isTarget ? "#f472b6" : nodeColor(node),
+      size: isSeed || isTarget ? display.nodeSize * 1.6 : display.nodeSize,
+      // Kept on the node so a later "colour by" change can recolour without
+      // re-running the search. vis-network ignores fields it doesn't recognise,
+      // which is what makes a DataSet item a fine place to park real data.
+      score: node.score,
       depth: node.depth,
+      endpoint: isSeed || isTarget,
     };
     // update() = insert or overwrite. A page can legitimately reappear in a later
     // Step (it's linked from several pages); overwriting keeps the newest score
@@ -70,6 +79,10 @@ function applyStep(step, seed, target) {
   if (step.note) log(step.note);
 }
 
+function nodeColor(node) {
+  return display.colorBy === "depth" ? depthColor(node.depth) : scoreColor(node.score);
+}
+
 function scoreColor(score) {
   if (score == null) return "#64748b";
   const t = Math.max(0, Math.min(1, score));
@@ -77,12 +90,123 @@ function scoreColor(score) {
   return `hsl(${hue}, 65%, ${35 + 20 * t}%)`;
 }
 
+function depthColor(depth) {
+  if (depth == null) return "#64748b";
+  // Cycles through distinct hues so each hop ring reads as its own band, rather
+  // than a gradient where depth 5 and 6 look identical.
+  const hue = (depth * 47) % 360;
+  return `hsl(${hue}, 60%, 55%)`;
+}
+
+// --- display settings ------------------------------------------------------
+// Every control carries data-display and its id is "d-<key>", so this reads them
+// generically instead of naming each one twice. Adding a control = adding HTML.
+const DISPLAY_STORAGE_KEY = "wikimap.display";
+const displayInputs = [...document.querySelectorAll("[data-display]")];
+const displayDefaults = Object.fromEntries(
+  displayInputs.map((el) => [el.id.slice(2), el.type === "checkbox" ? el.checked : el.value])
+);
+let display = {};
+
+function readDisplay() {
+  display = {};
+  for (const el of displayInputs) {
+    const key = el.id.slice(2); // strip the "d-" prefix
+    if (el.type === "checkbox") display[key] = el.checked;
+    else if (el.type === "range") display[key] = parseFloat(el.value);
+    else display[key] = el.value;
+  }
+}
+
+function applyDisplay() {
+  readDisplay();
+
+  network.setOptions({
+    nodes: { size: display.nodeSize },
+    edges: {
+      width: display.linkWidth,
+      arrows: { to: { enabled: display.arrows, scaleFactor: 0.4 } },
+    },
+    physics: {
+      enabled: display.physics,
+      solver: "forceAtlas2Based",
+      forceAtlas2Based: {
+        centralGravity: display.centralGravity,
+        // Negated here: vis-network wants a negative constant for repulsion, but a
+        // slider that moves right for "more repel" is the only sane control.
+        gravitationalConstant: -display.repel,
+        springConstant: display.springConstant,
+        springLength: display.springLength,
+      },
+    },
+  });
+
+  // Endpoints stay larger than ordinary nodes, so their per-node size override has
+  // to be rewritten whenever the base size changes.
+  const resized = nodes.get().map((n) => ({
+    id: n.id,
+    size: n.endpoint ? display.nodeSize * 1.6 : display.nodeSize,
+    color: n.endpoint ? n.color : nodeColor(n),
+  }));
+  if (resized.length) nodes.update(resized);
+
+  applyLabelFade();
+  localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify(display));
+}
+
+// vis-network has no "hide labels below zoom X" option, so this watches the zoom
+// level and drops the font to 0 below the threshold. Cheaper than rewriting every
+// node's label, because it's one global option rather than N DataSet updates.
+function applyLabelFade() {
+  const visible = network.getScale() >= display.labelZoom;
+  network.setOptions({ nodes: { font: { size: visible ? 13 : 0 } } });
+}
+
+network.on("zoom", applyLabelFade);
+
+function loadDisplay() {
+  let saved = {};
+  try {
+    saved = JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY)) || {};
+  } catch {
+    saved = {}; // corrupt or absent — fall back to the HTML defaults
+  }
+  for (const el of displayInputs) {
+    const key = el.id.slice(2);
+    if (!(key in saved)) continue;
+    if (el.type === "checkbox") el.checked = saved[key];
+    else el.value = saved[key];
+  }
+  applyDisplay();
+}
+
+for (const el of displayInputs) el.addEventListener("input", applyDisplay);
+
+document.getElementById("reset-display").addEventListener("click", () => {
+  for (const el of displayInputs) {
+    const value = displayDefaults[el.id.slice(2)];
+    if (el.type === "checkbox") el.checked = value;
+    else el.value = value;
+  }
+  applyDisplay();
+});
+
+document.getElementById("toggle-panel").addEventListener("click", () => {
+  document.getElementById("panel").classList.toggle("hidden");
+});
+
 // --- SSE -------------------------------------------------------------------
 let source = null;
+// Every Step of the last run, kept so the build can be replayed without searching
+// again. This is free: the algorithm already emits a recorded stream, so "animate"
+// is just the same steps on a different clock.
+let recorded = [];
+let lastRun = null;
 
 const form = document.getElementById("run-form");
 const runBtn = document.getElementById("run");
 const stopBtn = document.getElementById("stop");
+const replayBtn = document.getElementById("replay");
 
 function stop() {
   if (source) {
@@ -100,18 +224,20 @@ form.addEventListener("submit", (event) => {
   nodes.clear();
   edges.clear();
   logEl.replaceChildren();
+  recorded = [];
+  replayBtn.disabled = true;
 
   const seed = document.getElementById("seed").value.trim();
   const target = document.getElementById("target").value.trim();
   if (!seed || !target) return;
+  lastRun = { seed, target };
 
   runBtn.disabled = true;
   stopBtn.disabled = false;
 
   // URLSearchParams handles the encoding for every value at once, so titles with
-  // &, ?, # or spaces survive the query string. The knobs ride along as ordinary
-  // query params; omitting them entirely would still work, since the server
-  // defaults each one to config's value.
+  // &, ?, # or spaces survive the query string. Only SEARCH knobs go here —
+  // display settings never leave the browser.
   const query = new URLSearchParams({
     seed,
     target,
@@ -123,10 +249,15 @@ form.addEventListener("submit", (event) => {
   // One handler per event name the server emits. This is why _sse() writes an
   // "event:" line — without it everything would arrive as a generic "message".
   source.addEventListener("status", (e) => log(JSON.parse(e.data).message, "status"));
-  source.addEventListener("step", (e) => applyStep(JSON.parse(e.data), seed, target));
+  source.addEventListener("step", (e) => {
+    const step = JSON.parse(e.data);
+    recorded.push(step);
+    applyStep(step, seed, target);
+  });
   source.addEventListener("error", (e) => log(JSON.parse(e.data).message, "failure"));
   source.addEventListener("done", () => {
     log("done", "status");
+    replayBtn.disabled = recorded.length === 0;
     stop();
   });
 
@@ -147,7 +278,30 @@ stopBtn.addEventListener("click", () => {
   log("stopped", "status");
 });
 
-// --- settings --------------------------------------------------------------
+// Replay the recorded Steps on a timer. Obsidian has to synthesise an animation;
+// ours is the real build order, because the algorithm genuinely emitted it one
+// tick at a time (contract 2).
+replayBtn.addEventListener("click", () => {
+  if (!recorded.length || !lastRun) return;
+  const steps = recorded;
+  nodes.clear();
+  edges.clear();
+  logEl.replaceChildren();
+  replayBtn.disabled = true;
+
+  let i = 0;
+  const timer = setInterval(() => {
+    if (i >= steps.length) {
+      clearInterval(timer);
+      replayBtn.disabled = false;
+      log("replay done", "status");
+      return;
+    }
+    applyStep(steps[i++], lastRun.seed, lastRun.target);
+  }, 600);
+});
+
+// --- search knobs ----------------------------------------------------------
 // Owned by config.py, rendered here (contract 1). The inputs ship disabled and with
 // no value/min/max in the HTML; everything below is filled in from /api/config, so
 // the browser never keeps a copy of a number that could drift out of sync. If the
@@ -173,12 +327,11 @@ function applyDefaults() {
 // A*-only knobs are dimmed for algorithms that ignore them, so the panel never
 // implies a control is doing something it isn't.
 function syncAlgorithmUI() {
-  const isAstar = document.getElementById("algorithm").value === "astar";
+  const chosen = document.getElementById("algorithm").value;
   for (const label of document.querySelectorAll(".astar-only")) {
-    label.classList.toggle("inactive", !isAstar);
+    label.classList.toggle("inactive", chosen !== "astar");
   }
-  document.querySelector("header .mode").textContent =
-    `Connect — ${document.getElementById("algorithm").value}`;
+  document.querySelector("header .mode").textContent = `Connect — ${chosen}`;
 }
 
 fetch("/api/config")
@@ -216,3 +369,5 @@ fetch("/api/config")
     reset.addEventListener("click", applyDefaults);
   })
   .catch(() => {});
+
+loadDisplay();
