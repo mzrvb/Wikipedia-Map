@@ -52,6 +52,30 @@ MAX_DEPTH_BOUNDS = (1, 12)  # 0 would forbid moving at all; 12 is well past usef
 MAX_NODES = 500
 MAX_NODES_BOUNDS = (20, 5000)  # floor of 20 so at least one full tick can emit
 
+# --- A* heuristic knobs (Connect) ---------------------------------------------
+# A* scores a frontier page as f = g + W * h, where g is hops already walked and h
+# estimates hops remaining. g counts in HOPS, so h must too — raw cosine lives in
+# [0, 1] and adding it to a hop count means the heuristic can never outweigh even one
+# hop, which silently degrades A* into BFS. Hence:
+#
+#     h = HEURISTIC_HOP_SCALE * (1 - cosine(page, target))
+#
+# HEURISTIC_HOP_SCALE is "how many hops away is a page that looks totally unrelated".
+# 4.0 is grounded in published Wikipedia path lengths (~3.4-3.9 clicks between
+# arbitrary articles), not invented. PLACEHOLDER in the sense that it should be
+# calibrated against our own solved runs rather than left at the literature average.
+HEURISTIC_HOP_SCALE = 4.0
+HEURISTIC_HOP_SCALE_BOUNDS = (0.0, 20.0)
+
+# The weight W. This dial spans the whole spectrum of search behaviour, which is why
+# A* is worth building before BFS:
+#   W = 0        -> heuristic ignored, pure cost-so-far ordering == breadth-first
+#   W = 1        -> balanced A*
+#   W very large -> cost-so-far ignored == greedy best-first
+# So one algorithm plus this slider demonstrates greedy and BFS as its endpoints.
+HEURISTIC_WEIGHT = 1.0
+HEURISTIC_WEIGHT_BOUNDS = (0.0, 25.0)
+
 # --- Bidirectional search knobs (Connect BFS) ---------------------------------
 
 # How many backlinks ("what links here") to pull per page for the backward half of
@@ -69,7 +93,8 @@ BACKLINK_LIMIT = 500
 # --- Per-run settings ---------------------------------------------------------
 
 
-def _clamp(value: int, bounds: tuple[int, int]) -> int:
+def _clamp(value: float, bounds: tuple[float, float]) -> float:
+    """Works for ints and floats alike — max/min preserve the type they're given."""
     low, high = bounds
     return max(low, min(high, value))
 
@@ -101,6 +126,10 @@ class RunParams:
     top_k: int = TOP_K
     max_depth: int = MAX_DEPTH
     max_nodes: int = MAX_NODES
+    # A*-only. Greedy ignores these, which is fine — one params object covers every
+    # Connect algorithm rather than each growing its own parallel settings type.
+    heuristic_weight: float = HEURISTIC_WEIGHT
+    hop_scale: float = HEURISTIC_HOP_SCALE
 
     def __post_init__(self) -> None:
         # object.__setattr__ is how you assign inside a frozen dataclass — normal
@@ -109,3 +138,11 @@ class RunParams:
         object.__setattr__(self, "top_k", _clamp(self.top_k, TOP_K_BOUNDS))
         object.__setattr__(self, "max_depth", _clamp(self.max_depth, MAX_DEPTH_BOUNDS))
         object.__setattr__(self, "max_nodes", _clamp(self.max_nodes, MAX_NODES_BOUNDS))
+        object.__setattr__(
+            self,
+            "heuristic_weight",
+            _clamp(self.heuristic_weight, HEURISTIC_WEIGHT_BOUNDS),
+        )
+        object.__setattr__(
+            self, "hop_scale", _clamp(self.hop_scale, HEURISTIC_HOP_SCALE_BOUNDS)
+        )

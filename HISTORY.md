@@ -11,6 +11,66 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ## 2026-07-26
 
+### `connect/astar.py` complete — and it beat greedy on the first real run
+
+`AStarConnect` implements weighted A*: `f = g + W * h`, `h = hop_scale * (1 - cosine(page, target))`.
+`heapq` frontier, `cost_from_seed` map, `came_from` chain for path reconstruction. Two new knobs
+(`HEURISTIC_WEIGHT`, `HEURISTIC_HOP_SCALE`) with bounds, plus an algorithm registry so the server can
+offer both. **77 fast tests green** (18 new), ruff clean.
+
+**Live result — A* found a shorter path than greedy on `Cat → Astronomy`:**
+
+```
+A* (W=1):  Cat -> Age of Discovery -> Astronomer -> Astronomy     (3 hops)
+greedy:    Cat -> Science (journal) -> Spiral nebulae -> Galactic astronomy -> Astronomy   (4 hops)
+```
+
+Cost is the tradeoff: A* expanded 6 pages / 91s cold; greedy expanded 4 and reused warm caches.
+
+**The weight endpoints, live-confirmed:**
+
+```
+W=0    f = 0.00, 1.00, 1.00, 1.00   <- f == g exactly; breadth-first ordering
+       21 expansions, 67s
+W=25   f = 79.91, 55.02, 55.57      <- g swamped by the heuristic; greedy ordering
+       8 expansions, 0.05s
+```
+
+**A concrete demonstration that this A* is NOT optimal** — worth recording because it is the
+inadmissibility caveat happening for real, not hypothetically. With `max_depth=6`, A* returned a
+**3-hop** path. With `max_depth=2` forcing a wider sweep, it found a **2-hop** path that existed all
+along: `Cat -> Night vision -> Astronomy`. Textbook A* would never do this; ours does because
+cosine-derived `h` can overestimate the true remaining hops, so a deeper route can be popped before a
+shallower one, and the search stops at the first pop of the target. Fixing it properly means
+continuing until the frontier's minimum `f` exceeds the found path's cost — real work, deliberately
+not done: decision B already accepted an estimate over ground truth, and the cost of exhaustive
+confirmation is exactly what the top-K cap exists to avoid. Lowering `W` moves toward optimal and
+pays for it in expansions; that tradeoff is now a UI slider.
+
+**Design notes:**
+
+- **Depth cap `continue`s instead of returning.** Greedy walks one path, so its depth cap ends the
+  run. A* holds a frontier — a too-deep page is skipped while shallower candidates still get their
+  turn. Pinned by `test_depth_cap_skips_deep_pages_but_keeps_searching`.
+- **`h` reuses the similarity already computed for ranking**, so the heuristic costs zero extra
+  embeddings — the expensive part of every tick.
+- **`itertools.count()` tiebreaker in the heap tuples.** Without it, equal `f` values fall through to
+  comparing the next element; a monotonic counter keeps comparisons off the titles and makes ties
+  deterministic (FIFO).
+- **`_caches()` split out from `_algorithm()`.** Both are `lru_cache`d, but the caches must be built
+  once *in total* while algorithms are built once *per name*. Had the caches stayed inside
+  `_algorithm`, switching greedy → astar would have handed A* a cold cache and re-crawled Wikipedia.
+- **The registry lives in `algorithms/connect/__init__.py`, not the server.** Which algorithms exist
+  is domain knowledge; the server should offer a new one without learning anything but its name.
+
+**Test-instrument mistake worth remembering:** five A* tests failed against correct code because the
+helper read the expanded page from `step.edges[0].source`. A page with no outbound links expands
+normally but emits a Step with zero edges, so the helper silently dropped it. Same family as step 4's
+score-ordering mix-up. The fix was to read the note, not the edges.
+
+**Non-destructive tally:** two test doubles gained `lambda *_:` because `_algorithm` now takes a name.
+No assertion changed.
+
 ### Step 6 (per-run params) complete — knobs are live controls
 
 `RunParams` landed in `config.py`, `run()` gained a third argument, the server turns query params

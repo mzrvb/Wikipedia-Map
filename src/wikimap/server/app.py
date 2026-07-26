@@ -33,7 +33,7 @@ from fastapi.staticfiles import StaticFiles
 
 from wikimap import config
 from wikimap.algorithms.base import ConnectAlgorithm
-from wikimap.algorithms.connect.greedy import GreedyConnect
+from wikimap.algorithms.connect import ALGORITHMS, DEFAULT_ALGORITHM
 from wikimap.config import RunParams
 
 logger = logging.getLogger(__name__)
@@ -44,24 +44,40 @@ app = FastAPI(title="wikimap")
 
 
 @lru_cache(maxsize=1)
-def _algorithm() -> ConnectAlgorithm:
-    """Build the one shared GreedyConnect, with its two long-lived caches.
+def _caches():
+    """The two long-lived caches, built once and lazily.
 
-    `lru_cache(maxsize=1)` on a no-argument function is the compact idiom for
-    "compute once, reuse forever" — the same memoisation trick as
-    `Embedder._get_model`, just spelled with a decorator instead of an `if is None`.
-    The imports sit inside the function for the same reason the model load does:
-    nothing heavy should happen merely because someone imported this module.
+    Once because sharing them is the entire point — a fresh LinkCache per request
+    would mean re-crawling Wikipedia every time. Lazily (imports inside the function)
+    because importing this module must stay cheap: eager construction would demand
+    USER_AGENT and load an ~80MB model just to run the tests.
 
-    Annotated as the ABC, not GreedyConnect: everything below only relies on `run`,
-    which is exactly what the base class guarantees. Swapping in AStarConnect later
-    changes this one line and nothing else.
+    Split out from `_algorithm` so that every algorithm shares ONE set of caches. If
+    the caches were built inside `_algorithm`, switching greedy -> astar would hand
+    the new algorithm a cold cache.
     """
     from wikimap.embed import Embedder, EmbeddingCache
     from wikimap.wiki.cache import LinkCache
     from wikimap.wiki.client import WikiClient
 
-    return GreedyConnect(LinkCache(WikiClient()), EmbeddingCache(Embedder()))
+    return LinkCache(WikiClient()), EmbeddingCache(Embedder())
+
+
+@lru_cache(maxsize=None)
+def _algorithm(name: str = DEFAULT_ALGORITHM) -> ConnectAlgorithm:
+    """Build (once per name) the shared algorithm instance for `name`.
+
+    `lru_cache` keyed by the name: one GreedyConnect, one AStarConnect, each reused
+    across requests. Unbounded maxsize is safe because the key space is the fixed
+    ALGORITHMS registry, not user input — the route validates the name before it
+    reaches here.
+
+    Annotated as the ABC, not a concrete class: everything below relies only on
+    `run`, which is exactly what the base class guarantees. That is what lets a new
+    algorithm drop into the registry without the server learning anything about it.
+    """
+    link_cache, embed_cache = _caches()
+    return ALGORITHMS[name](link_cache, embed_cache)
 
 
 def _sse(event: str, data: dict) -> str:
@@ -75,7 +91,7 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n" # blank link at the end marks msg completion for delivery
 
 
-def _stream(seed: str, target: str, params: RunParams) -> Iterator[str]: # draws the actual frames of the generator
+def _stream(seed: str, target: str, params: RunParams, algorithm: str = DEFAULT_ALGORITHM) -> Iterator[str]: # draws the actual frames of the generator
     """Turn the algorithm's Step stream into SSE frames, one per tick.
 
     This is the generator chain that makes live drawing work: `run()` yields a Step,
@@ -88,9 +104,9 @@ def _stream(seed: str, target: str, params: RunParams) -> Iterator[str]: # draws
     This function is called once per request, so the settings live in this generator's
     own frame — two concurrent runs cannot see each other's.
     """
-    yield _sse("status", {"message": f"Searching {seed} → {target}…"})
+    yield _sse("status", {"message": f"Searching {seed} → {target} ({algorithm})…"})
     try:
-        algo = _algorithm()
+        algo = _algorithm(algorithm)
         for step in algo.run(seed, target, params):
             # asdict() walks the frozen dataclass (and its nested Node/Edge lists)
             # into plain dicts — json.dumps can't serialize a dataclass directly.
@@ -112,13 +128,21 @@ def read_config() -> dict:
         "top_k": config.TOP_K,
         "max_depth": config.MAX_DEPTH,
         "max_nodes": config.MAX_NODES,
+        "heuristic_weight": config.HEURISTIC_WEIGHT,
+        "hop_scale": config.HEURISTIC_HOP_SCALE,
         "embedding_model": config.EMBEDDING_MODEL,
+        # The registry, so the frontend's algorithm picker is built from what the
+        # server actually offers rather than a hardcoded list that could drift.
+        "algorithms": sorted(ALGORITHMS),
+        "default_algorithm": DEFAULT_ALGORITHM,
         # Bounds so the frontend can build controls without hardcoding ranges —
         # contract 1 applies to the *limits* as much as to the values.
         "bounds": {
             "top_k": list(config.TOP_K_BOUNDS),
             "max_depth": list(config.MAX_DEPTH_BOUNDS),
             "max_nodes": list(config.MAX_NODES_BOUNDS),
+            "heuristic_weight": list(config.HEURISTIC_WEIGHT_BOUNDS),
+            "hop_scale": list(config.HEURISTIC_HOP_SCALE_BOUNDS),
         },
     }
 
@@ -136,6 +160,19 @@ def connect(
     max_nodes: int = Query(
         config.MAX_NODES, ge=config.MAX_NODES_BOUNDS[0], le=config.MAX_NODES_BOUNDS[1]
     ),
+    heuristic_weight: float = Query(
+        config.HEURISTIC_WEIGHT,
+        ge=config.HEURISTIC_WEIGHT_BOUNDS[0],
+        le=config.HEURISTIC_WEIGHT_BOUNDS[1],
+    ),
+    hop_scale: float = Query(
+        config.HEURISTIC_HOP_SCALE,
+        ge=config.HEURISTIC_HOP_SCALE_BOUNDS[0],
+        le=config.HEURISTIC_HOP_SCALE_BOUNDS[1],
+    ),
+    # Literal-style validation via the registry: an unknown name is a 422 here rather
+    # than a KeyError deep inside _algorithm.
+    algorithm: str = Query(DEFAULT_ALGORITHM, pattern=f"^({'|'.join(sorted(ALGORITHMS))})$"),
 ) -> StreamingResponse:
     """Stream a Connect run as Server-Sent Events.
 
@@ -148,9 +185,15 @@ def connect(
     out-of-range values get a 422 here, at the edge, so the algorithm never has to
     know that user input exists. The bounds themselves come from config, not literals.
     """
-    params = RunParams(top_k=top_k, max_depth=max_depth, max_nodes=max_nodes)
+    params = RunParams(
+        top_k=top_k,
+        max_depth=max_depth,
+        max_nodes=max_nodes,
+        heuristic_weight=heuristic_weight,
+        hop_scale=hop_scale,
+    )
     return StreamingResponse(
-        _stream(seed, target, params),
+        _stream(seed, target, params, algorithm),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

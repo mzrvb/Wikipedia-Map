@@ -110,6 +110,18 @@ header .mode { color: var(--muted); font-size: 12px; }
 
 #settings input:focus { outline: 1px solid var(--accent); }
 #settings input:disabled { opacity: 0.4; }
+/* Knob exists but the selected algorithm ignores it. */
+#settings label.inactive { opacity: 0.35; }
+
+#run-form select {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--text);
+  font-size: 14px;
+}
+#run-form select:disabled { opacity: 0.45; }
 #settings small { color: var(--muted); font-size: 11px; text-transform: none; letter-spacing: 0; }
 
 #settings button {

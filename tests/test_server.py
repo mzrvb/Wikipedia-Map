@@ -40,7 +40,8 @@ def fake_algo(monkeypatch):
 
     def _install(steps: list[Step]) -> _FakeAlgorithm:
         algo = _FakeAlgorithm(steps)
-        monkeypatch.setattr(app_module, "_algorithm", lambda: algo)
+        # `lambda *_:` because _algorithm now takes the algorithm name.
+        monkeypatch.setattr(app_module, "_algorithm", lambda *_: algo)
         return algo
 
     return _install
@@ -126,7 +127,7 @@ def test_connect_reports_algorithm_failure_in_band(client, monkeypatch):
             yield Step(note="first tick")
             raise RuntimeError("wikipedia is on fire")
 
-    monkeypatch.setattr(app_module, "_algorithm", lambda: _Exploding())
+    monkeypatch.setattr(app_module, "_algorithm", lambda *_: _Exploding())
 
     response = client.get("/api/connect", params={"seed": "Cat", "target": "Astronomy"})
     events = _events(response.text)
@@ -209,6 +210,23 @@ class TestRunParamsOverTheWire:
         )
         assert response.status_code == 422
 
+    def test_astar_knobs_reach_the_algorithm(self, client, fake_algo):
+        algo = fake_algo([Step(note="only")])
+
+        client.get(
+            "/api/connect",
+            params={
+                "seed": "Cat",
+                "target": "Astronomy",
+                "algorithm": "astar",
+                "heuristic_weight": 0.0,
+                "hop_scale": 2.5,
+            },
+        )
+
+        assert algo.params[0].heuristic_weight == 0.0
+        assert algo.params[0].hop_scale == 2.5
+
     def test_concurrent_runs_do_not_share_settings(self, client, fake_algo):
         """The whole reason params are an argument and not module state: two runs
         with different K must not see each other's value."""
@@ -228,3 +246,58 @@ class TestRunParamsOverTheWire:
         from wikimap import config
 
         assert config.TOP_K == 20
+
+
+class TestAlgorithmSelection:
+    """Step 7: the server offers more than one Connect algorithm."""
+
+    def test_config_publishes_the_registry(self, client):
+        from wikimap.algorithms.connect import ALGORITHMS, DEFAULT_ALGORITHM
+
+        body = client.get("/api/config").json()
+
+        assert body["algorithms"] == sorted(ALGORITHMS)
+        assert body["default_algorithm"] == DEFAULT_ALGORITHM
+        assert "astar" in body["algorithms"]
+
+    def test_name_selects_the_algorithm(self, client, monkeypatch):
+        seen: list[str] = []
+
+        class _Recording:
+            def run(self, seed, target, params=None):
+                yield Step(note="ok")
+
+        monkeypatch.setattr(
+            app_module,
+            "_algorithm",
+            lambda name: (seen.append(name), _Recording())[1],
+        )
+
+        client.get(
+            "/api/connect",
+            params={"seed": "Cat", "target": "Astronomy", "algorithm": "astar"},
+        )
+
+        assert seen == ["astar"]
+
+    def test_unknown_algorithm_is_rejected_at_the_edge(self, client):
+        """A 422 here rather than a KeyError deep inside _algorithm."""
+        response = client.get(
+            "/api/connect",
+            params={"seed": "Cat", "target": "Astronomy", "algorithm": "nonsense"},
+        )
+        assert response.status_code == 422
+
+    def test_algorithms_share_one_set_of_caches(self, monkeypatch):
+        """Greedy and A* must not each get their own LinkCache — a fresh cache per
+        algorithm would mean re-crawling Wikipedia after switching."""
+        link_cache, embed_cache = "shared-links", "shared-embeddings"
+
+        # __wrapped__ is the undecorated function — calling it bypasses the lru_cache
+        # so this test can't be polluted by, or pollute, other tests' cached instances.
+        monkeypatch.setattr(app_module, "_caches", lambda: (link_cache, embed_cache))
+        greedy = app_module._algorithm.__wrapped__("greedy")
+        astar = app_module._algorithm.__wrapped__("astar")
+
+        assert greedy._link_cache is astar._link_cache is link_cache
+        assert greedy._embed_cache is astar._embed_cache is embed_cache

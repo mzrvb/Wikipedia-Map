@@ -112,7 +112,12 @@ form.addEventListener("submit", (event) => {
   // &, ?, # or spaces survive the query string. The knobs ride along as ordinary
   // query params; omitting them entirely would still work, since the server
   // defaults each one to config's value.
-  const query = new URLSearchParams({ seed, target, ...knobValues() });
+  const query = new URLSearchParams({
+    seed,
+    target,
+    algorithm: document.getElementById("algorithm").value || "greedy",
+    ...knobValues(),
+  });
   source = new EventSource(`/api/connect?${query}`);
 
   // One handler per event name the server emits. This is why _sse() writes an
@@ -147,7 +152,7 @@ stopBtn.addEventListener("click", () => {
 // no value/min/max in the HTML; everything below is filled in from /api/config, so
 // the browser never keeps a copy of a number that could drift out of sync. If the
 // fetch fails the controls simply stay disabled and the server's defaults apply.
-const KNOBS = ["top_k", "max_depth", "max_nodes"];
+const KNOBS = ["top_k", "max_depth", "max_nodes", "heuristic_weight", "hop_scale"];
 let defaults = null;
 
 function knobValues() {
@@ -165,10 +170,35 @@ function applyDefaults() {
   for (const knob of KNOBS) document.getElementById(knob).value = defaults[knob];
 }
 
+// A*-only knobs are dimmed for algorithms that ignore them, so the panel never
+// implies a control is doing something it isn't.
+function syncAlgorithmUI() {
+  const isAstar = document.getElementById("algorithm").value === "astar";
+  for (const label of document.querySelectorAll(".astar-only")) {
+    label.classList.toggle("inactive", !isAstar);
+  }
+  document.querySelector("header .mode").textContent =
+    `Connect — ${document.getElementById("algorithm").value}`;
+}
+
 fetch("/api/config")
   .then((r) => r.json())
   .then((cfg) => {
-    defaults = { top_k: cfg.top_k, max_depth: cfg.max_depth, max_nodes: cfg.max_nodes };
+    defaults = Object.fromEntries(KNOBS.map((knob) => [knob, cfg[knob]]));
+
+    const picker = document.getElementById("algorithm");
+    for (const name of cfg.algorithms) {
+      const option = document.createElement("option");
+      option.value = name;
+      // textContent, not innerHTML — same rule as the log panel.
+      option.textContent = name;
+      picker.append(option);
+    }
+    picker.value = cfg.default_algorithm;
+    picker.disabled = false;
+    picker.addEventListener("change", syncAlgorithmUI);
+    syncAlgorithmUI();
+
     for (const knob of KNOBS) {
       const [min, max] = cfg.bounds[knob];
       const input = document.getElementById(knob);

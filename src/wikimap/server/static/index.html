@@ -30,6 +30,12 @@
         To
         <input id="target" name="target" value="Astronomy" required maxlength="200" />
       </label>
+      <label>
+        Algorithm
+        <!-- Options are filled in from /api/config's registry, not listed here, so
+             adding an algorithm server-side needs no frontend change. -->
+        <select id="algorithm" name="algorithm" disabled></select>
+      </label>
       <button id="run" type="submit">Run</button>
       <button id="stop" type="button" disabled>Stop</button>
     </form>
@@ -51,6 +57,19 @@
         max nodes
         <input id="max_nodes" name="max_nodes" type="number" disabled />
         <small id="max_nodes-range"></small>
+      </label>
+      <!-- A*-only. W=0 orders purely by hops (breadth-first); W very large ignores
+           hops (greedy). The whole spectrum lives on this one control. -->
+      <label class="astar-only">
+        weight W
+        <input id="heuristic_weight" name="heuristic_weight" type="number" step="0.5" disabled />
+        <small id="heuristic_weight-range"></small>
+      </label>
+      <!-- Converts cosine into hops so g and h are the same unit — see astar.py. -->
+      <label class="astar-only">
+        hop scale
+        <input id="hop_scale" name="hop_scale" type="number" step="0.5" disabled />
+        <small id="hop_scale-range"></small>
       </label>
       <button id="reset-knobs" type="button" disabled>Reset</button>
     </form>

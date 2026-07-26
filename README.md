@@ -12,9 +12,9 @@ Both modes build the graph live on screen as the search runs.
 
 ## Status
 
-**Working MVP with live settings.** Roadmap steps 1–6 done — run a Connect search in the browser,
-watch the graph build live, and change the search knobs between runs. 59 fast tests green,
-`ruff check` clean.
+**Working MVP with live settings and two algorithms.** Roadmap steps 1–6 done, plus Connect's A* —
+run a search in the browser, watch the graph build live, switch algorithms, and change the knobs
+between runs. 77 fast tests green, `ruff check` clean.
 
 | Step | What | State |
 | --- | --- | --- |
@@ -24,18 +24,30 @@ watch the graph build live, and change the search knobs between runs. 59 fast te
 | 4 | First Connect algorithm — `algorithms/base.py` ABC + `connect/greedy.py` | done |
 | 5 | FastAPI + SSE server streaming Steps to a vis-network frontend | done |
 | 6 | Per-run params — knobs travel as `run()` arguments, wired to UI controls | done |
-| 7 | Rest of Connect — `connect/astar.py`, then bidirectional `connect/bfs.py` | next |
+| 7a | `connect/astar.py` — weighted A* on the semantic heuristic | done |
+| 7b | `connect/bfs.py` — bidirectional, uncapped | next |
 | 8 | Explore mode — `explore/bfs.py`, `explore/beam.py` | after Connect |
 
-Sample run — `Cat → Astronomy`, solved in 4 hops with the similarity score climbing each move:
+Sample run — `Cat → Astronomy`, the same pair under both algorithms:
 
 ```
-start: 'Cat' (target 'Astronomy')
-'Cat' -> 'Science (journal)'        (score 0.460)
-'Science (journal)' -> 'Spiral nebulae'      (score 0.542)
-'Spiral nebulae' -> 'Galactic astronomy'     (score 0.794)
-'Galactic astronomy' -> 'Astronomy'          (score 1.000)
+greedy (4 hops), similarity climbing each move:
+  'Cat' -> 'Science (journal)'              (score 0.460)
+  'Science (journal)' -> 'Spiral nebulae'   (score 0.542)
+  'Spiral nebulae' -> 'Galactic astronomy'  (score 0.794)
+  'Galactic astronomy' -> 'Astronomy'       (score 1.000)
+
+A* (3 hops), ordering by f = g + W·h:
+  expand 'Cat'               (g=0, h=3.20, f=3.20)
+  expand 'Science (journal)' (g=1, h=2.16, f=3.16)
+  ...
+  reached 'Astronomy' in 3 hops: Cat -> Age of Discovery -> Astronomer -> Astronomy
 ```
+
+A* usually finds shorter routes but expands more pages. Note it is **not guaranteed** to find the
+shortest one — the cosine heuristic can overestimate, and a 2-hop route (`Cat → Night vision →
+Astronomy`) exists that the default settings miss. Lowering the weight `W` searches more widely and
+costs more expansions; `W = 0` orders purely by hops and `W` very large reproduces greedy.
 
 First run for a given page is slow (~80s here) — it fetches every link and embeds each one. The
 two-layer cache makes the same run near-instant afterwards (<0.01s).
@@ -83,7 +95,8 @@ uvicorn wikimap.server.app:app --reload
 | --- | --- |
 | `GET /` | The frontend (form, graph canvas, run log) |
 | `GET /api/connect?seed=&target=` | SSE stream — one `step` event per algorithm tick |
-| `GET /api/connect?…&top_k=&max_depth=&max_nodes=` | Same, with per-run knobs. All optional; out-of-range values give a 422 |
+| `GET /api/connect?…&algorithm=greedy\|astar` | Which Connect algorithm to run (default `greedy`) |
+| `GET /api/connect?…&top_k=&max_depth=&max_nodes=&heuristic_weight=&hop_scale=` | Per-run knobs. All optional; out-of-range values give a 422 |
 | `GET /api/config` | The knobs *and their bounds*, read-only (contract 1: the frontend never hardcodes them) |
 
 Settings are per request, not global state — two browser tabs can run different `top_k` values

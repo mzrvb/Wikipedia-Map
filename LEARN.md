@@ -32,6 +32,13 @@ _(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood
   algorithm was FINE — my *tests* were checking the wrong thing (I looked at the last item in a
   score-sorted list, which is the *worst* option, not where greedy actually walked). Fixed the test's
   expectation, not the code. Lesson: when a test fails, look at *why* before assuming the code is wrong.
+  - **Happened again on 2026-07-26, same shape, bigger.** Five of the new A* tests failed at once
+    against correct code. The helper read "which page did this tick expand?" off
+    `step.edges[0].source` — but a page with **no outbound links** expands perfectly normally and
+    emits a Step with zero edges, so the helper silently skipped it and the expansion order came out
+    short. Fixed the helper (read the note instead), not the algorithm. **Pattern worth naming: when
+    several tests fail simultaneously and the code looks right, suspect the thing they all share** —
+    here, one helper function. A single broken instrument fails every measurement at once.
 
 ## Refining (mostly got it, some edge cases fuzzy)
 
@@ -87,6 +94,45 @@ _(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood
   wiring, where the shared-instance argument will matter more concretely.
 
 ## Understood (apprehended, for reference)
+
+- **2026-07-26 — A*, in ascending levels. Level 1: it's greedy that also counts its steps.**
+  Greedy asks one question — *which neighbour looks closest to the target?* A* asks a second —
+  *and how far have I already walked?* **Level 2 — why that matters:** greedy will cheerfully take
+  ten downhill hops and never notice the count. A* orders its options by the sum of both, so a
+  brilliant-looking page five hops deep can lose to a decent page one hop deep. **Level 3 — the
+  formula.** `f = g + W*h`, where `g` = hops already walked (known exactly) and `h` = hops estimated
+  remaining (a guess). Lowest `f` gets expanded next. **Level 4 — THE trap, and the thing I'd have
+  got wrong:** `g` is a hop count (1, 2, 3) and cosine similarity is a number in [0, 1]. **Adding
+  them directly is meaningless** — the heuristic could never outweigh even a single hop, so A* would
+  silently behave like breadth-first search and I'd have spent a day wondering why the heuristic
+  "wasn't working". Cosine must be converted into hops first:
+  `h = hop_scale * (1 - cosine)`, `hop_scale ≈ 4` because published measurements put arbitrary
+  Wikipedia articles ~3.4–3.9 clicks apart. **The general rule: before adding two numbers, check
+  they're the same kind of thing.** **Level 5 — what the weight `W` does**, confirmed by running it:
+  ```
+  W=0     f = 0.00, 1.00, 1.00, 1.00    <- f is literally just g. Breadth-first.
+  W=25    f = 79.91, 55.02, 55.57       <- g is noise next to h. Greedy.
+  ```
+  So **one algorithm plus one slider contains both greedy and BFS as its endpoints** — which is why
+  it was worth building A* before writing a separate BFS. **Level 6 — the honesty caveat.** Textbook
+  A* is guaranteed to find the *shortest* path only if `h` never overestimates ("admissible").
+  Cosine is a vibe, not a bound, so **this A* has no such guarantee** — and it demonstrably lost:
+  it returned a 3-hop `Cat → Astronomy` route while a 2-hop one (`Cat → Night vision → Astronomy`)
+  existed. Not a bug — the accepted cost of decision B. The lesson to keep: **a famous algorithm's
+  guarantees come with preconditions, and using the name doesn't buy the guarantee.**
+
+- **2026-07-26 — `heapq` = "always hand me the smallest thing next".**
+  A* needs to expand the frontier page with the lowest `f`. Re-sorting a list every tick would be
+  wasteful; `heapq` keeps a list *partially* ordered so `heappush`/`heappop` are cheap and pop always
+  returns the minimum. Two practical things learned using it:
+  - **You push tuples, and it compares them left to right.** `(f, tiebreak, title)` — so equal `f`
+    values fall through to the second element. That's why the code carries an `itertools.count()`:
+    without it, ties would be broken by comparing *titles* (alphabetical, arbitrary), and if the
+    third element were ever a dict it would crash outright. A monotonic counter makes ties FIFO and
+    deterministic.
+  - **You can't update an entry's priority.** The standard workaround, used here: push a *new* entry
+    when a better route is found and ignore stale pops via `if current in expanded: continue`. So the
+    heap can hold the same page several times, and that's normal, not a leak.
 
 - **2026-07-26 — The mutable default argument trap (why `params=None` and not `params=RunParams()`).**
   `def run(self, seed, target, params=None)` then `if params is None: params = RunParams()`. Looks

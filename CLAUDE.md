@@ -34,6 +34,16 @@ is `apply(step)`. 21 fast tests green (7 new in `test_graph.py`), `ruff check` c
 similarity to the target (decision C), capped to TOP_K, with a genuine `visited` check (the predecessor's
 dead loop guard, not ported). 30 fast tests green (9 new in `test_greedy.py`), `ruff check` clean. No new deps.
 
+**`connect/astar.py` — done.** Weighted A*: `f = g + W * h` with `h = hop_scale * (1 - cosine)`, a
+`heapq` frontier, and `came_from` path reconstruction. The rescale is load-bearing — `g` counts hops,
+so raw cosine added to it can never outweigh one hop and A* would silently degrade to BFS. `W` spans
+the spectrum (0 = breadth-first ordering, large = greedy), live-confirmed. A registry in
+`algorithms/connect/__init__.py` holds `{greedy, astar}`; `/api/connect?algorithm=` selects, and
+`_caches()` is split from `_algorithm()` so both algorithms share one warm cache. 77 fast tests green
+(18 new), `ruff check` clean. **Live: A* solved `Cat → Astronomy` in 3 hops where greedy took 4** —
+but it is NOT optimal (a 2-hop route existed; cosine `h` is inadmissible). See HISTORY; do not let a
+future docstring claim the textbook guarantee.
+
 **Roadmap step 6 (per-run params) — done.** `config.RunParams` is a frozen dataclass whose defaults
 come from the module constants and whose `__post_init__` clamps every field to its `*_BOUNDS` — that
 clamp is what enforces decision C's K≤20 ceiling against *any* caller, not just HTTP ones.
@@ -73,17 +83,18 @@ each new Connect algorithm proves the shared pieces before Explore inherits them
    warm caches survive and concurrent runs can't stomp each other. Bounds are published via
    `/api/config` and the frontend's controls are built from them. `TOP_K = 20` is a **ceiling, not a
    fixed value** (`TOP_K_BOUNDS`); decision C locks the mechanism and the maximum.
-2. **`connect/astar.py`**, then **`connect/bfs.py`** (in that order — see HISTORY for why BFS is
-   neither cheap nor the ground-truth baseline the brief implies). A* must rescale cosine into hop
-   units before adding it to `g` (`h = LAMBDA * (1 - cos)`, `f = g + W * h`) or it silently
-   degenerates into BFS. BFS must be **bidirectional** and must not be cosine-capped.
-   `LinkCache.get_backlinks` (done, 2026-07-26) is the data layer it needs.
+2. ~~**`connect/astar.py`**~~ **Done 2026-07-26.** Then **`connect/bfs.py`** — see HISTORY for why
+   BFS is neither cheap nor the ground-truth baseline the brief implies. It must be **bidirectional**
+   and must not be cosine-capped (a cosine-capped BFS just reproduces greedy's bias and cannot
+   answer "did greedy miss a shorter route"). `LinkCache.get_backlinks` (done, 2026-07-26) is the
+   data layer it needs.
 3. **Explore** (`explore/bfs.py`, `explore/beam.py`) only once Connect is complete.
 
 **Every step must be non-destructive:** existing tests stay green without being edited, new
 parameters arrive with defaults, `/api/config` only gains fields, existing URLs keep working.
-(Held so far. Backlinks: +6 tests, none edited. Params: +15 tests, no assertion changed — only two
-test *doubles* gained `params=None` to match the new `run` signature. 59 fast tests green.)
+(Held so far. Backlinks: +6 tests, none edited. Params: +15 tests, two test *doubles* gained
+`params=None`. A*: +18 tests, two doubles gained `lambda *_:`. No assertion has ever changed.
+77 fast tests green.)
 
 **No shared base above Connect and Explore yet.** A parent `Algorithm` class holding `__init__` and
 an anchor-parameterised ranking helper was proposed and deliberately deferred until Connect is
