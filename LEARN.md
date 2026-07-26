@@ -9,15 +9,7 @@ what's still shaky, what to revisit. Newest entries at the top of each section.
 _(2026-07-23 — flagged these while tired after building step 4; revisit fresh. Plain-English
 versions on purpose. Move up to "Refining" once they actually click.)_
 
-- **What `base.py` (the ABC) even is — a job description, not a worker.** It's a *template/promise*:
-  "every Connect algorithm MUST have a `run(seed, target)` that emits steps." It doesn't search
-  anything itself. Two syntax bits that confused me:
-  - **`if TYPE_CHECKING:` around some imports** = "only read these for labels, never actually run
-    them." Used to avoid loading heavy libraries (Wikipedia, the model) just to *name* a type. Cheap
-    file to import.
-  - **the empty `run` body is `...`** = "to be filled in by a real algorithm later." I deliberately
-    did NOT use `yield` there, because `yield` would turn the blank template into a real do-nothing
-    function. `...` keeps it a pure template.
+_(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood".)_
 
 - **What `greedy.py` actually does (in words).** Start at the seed page → look at every page it links
   to → score each by "how related does this feel to the target?" (cosine similarity, higher = closer)
@@ -55,23 +47,6 @@ versions on purpose. Move up to "Refining" once they actually click.)_
   hit a concurrency bug in practice yet — holding it as principle. For step 4 we deliberately read
   `config.TOP_K` directly (no server exists to race), and switch to per-run params when the UI lands.
 
-- **2026-07-23 — ABC (abstract base class) = a declared shape, not runnable code.** Introduced
-  while planning step 4; not yet written in code, so revisit once `algorithms/base.py` exists.
-  `base.py`'s `ConnectAlgorithm(ABC)` will define `run(seed, target)` with `@abstractmethod` and
-  an empty body (`...`). Key points that landed: (1) the ABC *executes nothing* — it's a promise
-  that every subclass provides its own `run`; (2) `@abstractmethod` makes Python forbid
-  instantiating the base directly and forces subclasses to implement `run`; (3) algorithms are
-  **sibling subclasses** (`GreedyConnect`, `AStarConnect`, `BFSConnect`), NOT stacked wrappers —
-  they *replace* each other's `run`, they don't wrap. The server picks *which subclass to build*.
-  Corrected mental model: not "layer 1 runs, layer 2 wraps" — it's "base *declares*, subclass
-  *does*." Still shaky because I haven't written or subclassed an ABC by hand yet.
-  - **Follow-up (step 4 built):** now written by hand. Two things that only landed once it was real
-    code: (1) `@abstractmethod` genuinely bites — `test_base_cannot_be_instantiated` proves
-    `ConnectAlgorithm(None, None)` raises `TypeError`, so the "you can't instantiate the base" rule is
-    enforced by Python, not just convention. (2) The base can still hold *shared* concrete code — our
-    `__init__` (storing the two caches) lives on the base and subclasses inherit it; only `run` is
-    abstract. So an ABC isn't all-or-nothing "everything abstract"; it's "some shared, `run` mandated."
-
 - **2026-07-23 — Generators / `yield` = pause-and-resume, the engine behind contract 2.** An
   algorithm's `run` will `yield` one `Step` at a time and *pause*, instead of building a full list
   and `return`ing it. That's what lets the server stream each Step to the browser the instant it's
@@ -95,6 +70,99 @@ versions on purpose. Move up to "Refining" once they actually click.)_
   wiring, where the shared-instance argument will matter more concretely.
 
 ## Understood (apprehended, for reference)
+
+- **2026-07-25 — ABCs, finally. Written in ascending levels because that's what made it land.**
+  (Replaces the earlier ABC notes, which were technically right but started at the wrong altitude —
+  see also the "ascending levels" teaching rule now in CLAUDE.md.)
+
+  **Level 1 — one sentence.** `class ConnectAlgorithm(ABC):` means **you can't make one of these.**
+  `ConnectAlgorithm(link_cache, embed_cache)` → `TypeError`, always. `GreedyConnect(...)` → fine.
+  That's the whole feature: `(ABC)` makes the class unbuildable.
+
+  **Level 2 — why want that?** Because `ConnectAlgorithm` *isn't a thing, it's a category*. You don't
+  own "a vehicle" — you own a car or a bike. There's no "Connect algorithm" running a search; there's
+  greedy, or A*, or BFS. `(ABC)` tells Python "this is a category name, don't let anyone build one."
+
+  **Level 3 — what it buys me.** A category is only useful if everything in it behaves the same, so
+  the base doubles as a **checklist**: "to count as a Connect algorithm you must have
+  `run(seed, target)`." `@abstractmethod` writes one checklist item. Forget `run` in a new algorithm
+  and Python refuses to build it — I find out immediately, not mid-search.
+
+  **Level 4 — the exact rule.** Two pieces, two jobs: `@abstractmethod` **marks a blank**; `(ABC)`
+  **turns on the inspector**. Rule: *Python refuses to create an object from any class that still has
+  an unfilled blank.* Consequences that matter:
+  - The blocker is `@abstractmethod`, **not `ABC`**. A class inheriting `ABC` with zero abstract
+    methods instantiates perfectly fine. `ABC` only makes the decorator mean something.
+  - It blocks **existence, not arguments** — the base refuses even when called with no arguments at
+    all. Two different `TypeError`s to keep apart: "Can't instantiate abstract class…" (unfilled
+    blank) vs "missing 1 required positional argument" (wrong args).
+  - The base's **non-abstract code is fully alive.** `__init__` has no decorator, so `GreedyConnect`
+    — which defines no `__init__` of its own — inherits it and gets the cache-storing free. That's
+    why greedy can use `self._link_cache` without ever assigning it. An ABC is **mostly real code
+    with one hole punched in it**, not "everything blank."
+  - "Abstract" means **unfinished, not inaccessible**. Nothing is hidden or restricted — a subclass
+    can even call `super().run()` into the abstract body. Access in Python is the underscore
+    convention (`_link_cache`), a completely separate idea.
+  - Algorithms are **sibling subclasses**, not stacked wrappers — they *replace* each other's `run`.
+    Base *declares*, subclass *does*.
+
+  **Level 5 — where it pays off (step 5).** The server will hold *some* algorithm and call
+  `.run(seed, target)` without knowing which. `(ABC)` is the guarantee that call won't blow up, so
+  dropping in A* later changes zero server code. `isinstance(greedy_instance, ConnectAlgorithm)` is
+  `True` — a `GreedyConnect` genuinely *is* a `ConnectAlgorithm`.
+
+  **Level 6 — internals (trivia; safe to ignore).** `@abstractmethod` is two lines in `Lib/abc.py`:
+  it sets `funcobj.__isabstractmethod__ = True` and returns the function unchanged. Just a flag on
+  an attribute — no magic, no reserved syntax. `ABC` swaps the class's *metaclass* to `ABCMeta`,
+  whose `__new__` runs **when the class is defined** (not when instantiated), scanning every name in
+  the class body with `getattr(value, "__isabstractmethod__", False)` and freezing the hits into
+  `cls.__abstractmethods__`. Mine: `ConnectAlgorithm` → `{'run'}`, `GreedyConnect` → `set()`.
+  Instantiation is then just "is that set empty?" **Two moments: scan at class-definition time,
+  check at object-creation time.** Level 3 is enough to read and write every algorithm here.
+
+  **Level 4b — which way inheritance runs (I had this backwards).** I called `GreedyConnect` the
+  *parent*. It's the **child**. The rule: **whatever sits in the parentheses is the parent.**
+  ```python
+  class ConnectAlgorithm(ABC):            # ABC is the parent
+  class GreedyConnect(ConnectAlgorithm):  # ConnectAlgorithm is the parent
+  ```
+  Chain (`GreedyConnect.__mro__`): `GreedyConnect` → `ConnectAlgorithm` → `ABC` → `object`. Left to
+  right = child to ancestor. Why it matters beyond vocabulary: **inheritance flows downhill** — the
+  child receives from the parent, never the reverse. That's how `GreedyConnect` gets a working
+  `__init__` it never wrote; hold the direction backwards and that looks impossible. Sanity check:
+  **the child is the more specific thing** ("greedy Connect" is a kind of "Connect algorithm"), so
+  specific inherits from general. Vocabulary: *parent = base class = superclass* (`ConnectAlgorithm`);
+  *child = subclass = derived class* (`GreedyConnect`); *siblings* = `GreedyConnect` and
+  `AStarConnect` — same parent, no relationship to each other. Also: the decorator is
+  `@abstractmethod`, there is no `@abstractclass` — it marks one *method*, and the class becomes
+  abstract as a consequence of containing one.
+
+  **Related syntax in `base.py`, not ABC-specific:**
+  - `if TYPE_CHECKING:` = "read these imports for labels only, never actually run them" — avoids
+    dragging in wikipediaapi or a model load just to *name* a type in an annotation.
+  - The abstract body is `...`, deliberately **not** `yield`: a `yield` anywhere in a function body
+    makes the whole thing a real (do-nothing) generator. `...` keeps it an empty declaration.
+    Python needs *some* body — an empty one is a syntax error — and `...` is the idiom for
+    "intentionally blank."
+  - `@decorator` syntax is a **general Python mechanism**, not an ABC thing: a function that takes
+    the function below it and does something with it. Meeting it again in step 5 — FastAPI's
+    `@app.get("/connect")` registers the function under it as a URL route. Same syntax, same idea.
+
+- **2026-07-25 — Two different modules both named "abc"; don't conflate them.** `base.py` imports
+  from both on adjacent lines: `from abc import ABC, abstractmethod` and `from collections.abc import
+  Iterator`. They are NOT the same module. **`abc`** = the *machinery* for building abstract classes
+  (`ABC`, `@abstractmethod`) — the tools we use to declare `ConnectAlgorithm`. **`collections.abc`** =
+  a *collection* of ready-made abstract base classes describing container behaviors (`Iterator`,
+  `Iterable`, `Mapping`, `Sequence`, `Callable`, …) — the standard library already used the `abc`
+  machinery to define types for the common container shapes. Same three letters, same underlying idea,
+  different files: on disk they're `Lib/abc.py` and `Lib/_collections_abc.py`, both shipped with Python
+  (stdlib, nothing to install). My code only uses `collections.abc.Iterator` in *type annotations* —
+  `run(...) -> Iterator[Step]` = "calling this hands back something you can loop over, each item a
+  `Step`." So the two abcs do complementary jobs: `abc` *enforces* that subclasses provide `run`;
+  `collections.abc` *describes* what `run` returns. (Historical note so old tutorials don't confuse me:
+  `from typing import Iterator` is the deprecated old spelling — since 3.9 import these from
+  `collections.abc` directly; `typing`'s versions are now just aliases pointing back to the same
+  classes.)
 
 - **2026-07-23 — The three-way split: ABC *declares*, subclass *does*, config *configures*.**
   Where step 4's pieces live, and why they're separate: `algorithms/base.py` (ABC) declares the

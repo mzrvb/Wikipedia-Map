@@ -14,8 +14,8 @@ them and stream `run(...)` without knowing which one it holds.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from abc import ABC, abstractmethod #
+from collections.abc import Iterator # Iterator from standard python library (collections.abc)
 from typing import TYPE_CHECKING
 
 from wikimap.graph.contracts import Step

@@ -180,6 +180,40 @@ contracts still hold exactly as written.
 - Default to walking through code after writing it rather than before, unless the user asks
   to design something together first.
 
+### Explaining a complex concept: ascending levels
+
+When a concept needs more than a line or two — a language feature, a pattern, an algorithmic
+idea — **teach it in ascending levels of complexity, and label them.** This format was arrived
+at after several failed attempts at explaining ABCs (2026-07-25) and is the one that worked.
+
+- **Level 1 is one sentence, in plain English, with no jargon.** The single most useful true
+  thing about the concept. For ABCs that was: *"it means you can't make one of these."* Not a
+  definition — the *point*.
+- **Level 2 is why you'd ever want that**, usually via an everyday analogy ("you don't own *a
+  vehicle*, you own a car or a bike"). Motivation before mechanism, always.
+- **Level 3 is the practical rule** — what it does for you in this codebase, still mostly
+  jargon-free.
+- **Levels 4+ add precision**: exact semantics, then implementation/internals last.
+- **Say explicitly where they can stop.** Name which level is enough to read and write the
+  project's code, and mark the rest as optional. This is what keeps depth from reading as
+  "you must absorb all of this."
+
+Anti-patterns, learned the hard way in that same session:
+
+- **Don't start at the mechanism.** Metaclasses, `__isabstractmethod__`, and CPython source
+  were correct and useless — they answered "how is it implemented" before "what is it for."
+- **Follow-up questions pull depth; that is not a request to stay there.** Answering a
+  narrow "how does X work internally" is fine, but re-anchor to the simple version afterward
+  rather than continuing to descend.
+- **When the user says they're lost, drop all jargon and restart from Level 1.** Do not
+  rephrase the previous explanation — go simpler than feels necessary and rebuild.
+- Ground each level in the project's own code (`ConnectAlgorithm`, `GreedyConnect`) rather
+  than in invented `Foo`/`Bar` examples, and prefer *running* a small demo and showing the
+  real output over asserting what Python would do.
+
+Once a concept lands, write it into `LEARN.md` **in the level structure that taught it** —
+the layering is the part worth re-reading, not just the conclusion.
+
 ## Working practice
 
 Build one roadmap step at a time (brief §6). Each step is a working, testable checkpoint:
@@ -192,6 +226,24 @@ eventual implementation must honor; html/js/css get a comment header doing the s
 An empty file cannot tell you whether it is unwritten or belongs to a dead design, which
 is exactly what made the superseded `conceptmap` skeleton expensive to resolve. Check with
 `find src tests -type f -empty` — it should return nothing.
+
+**Keep the docs current as you go — unprompted, in the same turn as the work.** Documentation
+updates are part of the task, never a follow-up offer. Do not ask "want me to add this to
+LEARN.md?" — just add it and report it in one line at the end of the response. The user should
+never have to prompt for a doc update; being asked to is a defect (flagged 2026-07-25, after two
+such offers in one session).
+
+Which file absorbs what:
+
+| File | Update when | Watch for |
+| --- | --- | --- |
+| `LEARN.md` | a concept clicks, or a misconception gets corrected — mid-conversation, not at step boundaries | Move items between "Struggling"/"Refining"/"Understood" as understanding shifts; record the *correction*, not just the clean fact |
+| `README.md` | a roadmap step completes, or setup/layout changes | **Rots silently** — nothing else points a reader here. It was four steps stale when caught on 2026-07-25. Check it at every step boundary |
+| `HISTORY.md` | decisions, reversals, step completions, placeholders — see below | Record *why*; `git log` covers *what* |
+| `CLAUDE.md` STATUS | every roadmap step | Keep in sync with README's status table — two places, same facts |
+
+If a doc makes a claim you can't verify (e.g. "see HISTORY for why"), either verify it or say the
+rationale was never recorded. Do not paper over a gap with a pointer to nothing.
 
 **Log significant changes in [`HISTORY.md`](HISTORY.md).** Add an entry when you complete a roadmap step,
 make or reverse an architectural decision, introduce a placeholder or known-wrong value, or

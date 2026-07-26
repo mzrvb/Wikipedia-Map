@@ -12,8 +12,23 @@ Both modes build the graph live on screen as the search runs.
 
 ## Status
 
-Scaffolded; roadmap step 1 (the data layer) not started. The tree under `src/wikimap/` is
-placeholders — module docstrings stating each file's responsibility, no implementation yet.
+Roadmap steps 1–4 done; **step 5 (server + live graph) is next.** 30 fast tests green,
+`ruff check` clean.
+
+| Step | What | State |
+| --- | --- | --- |
+| 1 | Data layer — `wiki/client.py` (ns0 filtering, UA, retry) + two-layer disk-backed cache | done |
+| 2 | Embeddings — `embed.py`: cosine similarity, lazy-loaded model, cached by title | done |
+| 3 | Graph model + contracts — `graph/contracts.py` (`Step`, `Grade`, …), `graph/model.py` | done |
+| 4 | First Connect algorithm — `algorithms/base.py` ABC + `connect/greedy.py` | done |
+| 5 | FastAPI + SSE server streaming Steps to a vis-network frontend | next |
+
+Everything under `src/wikimap/` beyond `wiki/`, `embed.py`, `graph/`, and `algorithms/` is still
+a placeholder — a module docstring stating that file's responsibility, no implementation.
+
+Note a deviation from the brief's ordering: brief §6 step 4 is headless *Explore*
+(`explore/bfs.py`); what was actually built is Connect's greedy. Steps 5+ are unaffected — the
+server work is the same either way — but the rationale was never recorded.
 
 ## Setup
 

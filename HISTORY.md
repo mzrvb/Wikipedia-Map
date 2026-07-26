@@ -9,6 +9,59 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## 2026-07-25
+
+### CLAUDE.md gains a teaching-format rule: explain complex concepts in ascending levels
+
+No code changed. Session was spent re-teaching ABCs (the concept `LEARN.md` had flagged as
+still-shaky after step 4). The first three attempts failed in an instructive way, so the
+format that finally worked is now a rule in CLAUDE.md's collaboration section rather than a
+one-off.
+
+**What failed:** each attempt was *correct* and got less useful — job-description analogy, then
+`@abstractmethod`-vs-`ABC` precision, then `Lib/abc.py` source and `ABCMeta.__new__`. The user's
+own follow-up questions ("is `__isabstractmethod__` part of the library?", "how does ABC scan?")
+pulled the depth, which is the trap: answering them faithfully kept descending into implementation
+before the *purpose* had landed. Their words: "explain as SIMPLY as possible and build up."
+
+**What worked:** labelled Levels 1–5. L1 = one jargon-free sentence stating the *point* ("it means
+you can't make one of these"), L2 = motivation via everyday analogy ("you don't own *a vehicle*"),
+L3 = the practical rule, L4+ = precision then internals, plus an explicit "you can stop at Level 3;
+the rest is trivia." Naming a stopping point is what stopped depth from reading as obligation.
+
+Generalized into CLAUDE.md → "Explaining a complex concept: ascending levels", with the
+anti-patterns (don't open with mechanism; a follow-up question pulling depth is not licence to
+stay there; restart at L1 — don't rephrase — when the user says they're lost) and a preference
+for running small demos and showing real output over asserting what Python would do.
+
+`LEARN.md` restructured to match: the scattered ABC entries (one under "Struggling with", one
+under "Refining" with two follow-ups) are consolidated into a single "Understood" entry written
+*in the level structure that taught it* — the layering, not just the conclusion, is the reusable
+part. Corrections captured that the old entries had wrong or missing: the instantiation blocker is
+`@abstractmethod` and not `ABC` itself; it blocks *existence*, not arguments; and "abstract" means
+unfinished, not inaccessible (orthogonal to the underscore convention). A later correction in the
+same session added Level 4b: the user had the inheritance direction backwards (called
+`GreedyConnect` the *parent*) — whatever sits in the parentheses is the parent, and inheritance
+flows downhill, which is what makes the inherited `__init__` possible.
+
+### Docs-update rule: keep them current unprompted, never offer
+
+Separate complaint from the same session, and a process defect rather than a teaching one. Twice
+I *offered* to update `LEARN.md` ("say the word and I'll add it") instead of just doing it, forcing
+the user to prompt for each update — the exact overhead the running-log practice exists to remove.
+Now a rule in Working practice, with a table of which file absorbs what.
+
+Two things it caught immediately: **`README.md` was four roadmap steps stale** (still claiming step 1
+hadn't started and the tree was all placeholders), because nothing in the working practice pointed at
+it after a step — it now has a status table and an explicit check at every step boundary. And the
+rule against unverifiable pointers came from writing "see HISTORY.md for why" about the step-4
+ordering deviation, then finding no such entry.
+
+**Open — step 4 ordering deviation, rationale never recorded.** Brief §6 step 4 is headless *Explore*
+(`explore/bfs.py`); what was built is Connect's greedy. Defensible (greedy exercises the same top-K
+cap and gives a concrete target to search toward, and steps 5+ are unaffected), but the actual
+reasoning is lost. Noted in README as a known gap rather than back-filled with a guess.
+
 ## 2026-07-23
 
 ### Roadmap step 4 (first algorithm: greedy Connect) complete
