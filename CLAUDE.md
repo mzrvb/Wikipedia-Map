@@ -34,6 +34,17 @@ is `apply(step)`. 21 fast tests green (7 new in `test_graph.py`), `ruff check` c
 similarity to the target (decision C), capped to TOP_K, with a genuine `visited` check (the predecessor's
 dead loop guard, not ported). 30 fast tests green (9 new in `test_greedy.py`), `ruff check` clean. No new deps.
 
+**Roadmap step 6 (per-run params) — done.** `config.RunParams` is a frozen dataclass whose defaults
+come from the module constants and whose `__post_init__` clamps every field to its `*_BOUNDS` — that
+clamp is what enforces decision C's K≤20 ceiling against *any* caller, not just HTTP ones.
+`ConnectAlgorithm.run` and `GreedyConnect.run` take `params: RunParams | None = None` (built inside
+the function, never as a default argument value); `greedy.py` no longer reads `config` at all.
+`/api/connect` accepts `top_k`/`max_depth`/`max_nodes` as optional query params validated by
+`Query(ge=…, le=…)` against the same bounds, and `/api/config` publishes those bounds so the
+frontend's number inputs — which ship disabled and value-less — are filled entirely from the server.
+59 fast tests green (15 new), `ruff check` clean. Live-proven: `top_k` 20/5/2 yields exactly
+[1,20,20,20,20] / [1,5,…] / [1,2,…] nodes per tick, `max_depth=2` trips the cap, `top_k=21` → 422.
+
 **Roadmap step 5 (the server: FastAPI + SSE) — done. MVP is working end-to-end.** `server/app.py`
 holds the app: `GET /api/connect?seed=&target=` streams `GreedyConnect.run(...)` as SSE (one `step`
 frame per tick, plus `status`/`error`/`done`), `GET /api/config` exposes the knobs read-only, and
@@ -51,8 +62,32 @@ nodes / 80 edges, top-K holding at exactly 20 per tick. Frames arrive **incremen
 `Banana → Quantum mechanics` run delivered at +0.00/+5.71/+6.27/+10.17s), which is the live-drawing
 guarantee. Cold run ~80s, warm re-run <0.01s — the two-layer cache doing its job.
 
-**Roadmap step 6 (Explore settings UI) — next.** Wire the config knobs to frontend controls and add
-`explore/` (brief §6 step 4, skipped — see HISTORY) so the sphere can be grown and reshaped live.
+**Roadmap replanned 2026-07-26 — finish Connect before starting Explore.** The brief puts the
+Explore settings UI at step 6 and the rest of Connect at step 7; that order is reversed. Connect is
+the only mode that exists, so completing it yields one coherent mode instead of two half-modes, and
+each new Connect algorithm proves the shared pieces before Explore inherits them. Next, in order:
+
+1. ~~**Per-run params.**~~ **Done 2026-07-26.** `RunParams` (frozen dataclass in `config.py`,
+   defaults from the constants, clamped to bounds in `__post_init__`) is passed as
+   `run(seed, target, params=None)` — *not* constructor state, so the `@lru_cache` singleton and its
+   warm caches survive and concurrent runs can't stomp each other. Bounds are published via
+   `/api/config` and the frontend's controls are built from them. `TOP_K = 20` is a **ceiling, not a
+   fixed value** (`TOP_K_BOUNDS`); decision C locks the mechanism and the maximum.
+2. **`connect/astar.py`**, then **`connect/bfs.py`** (in that order — see HISTORY for why BFS is
+   neither cheap nor the ground-truth baseline the brief implies). A* must rescale cosine into hop
+   units before adding it to `g` (`h = LAMBDA * (1 - cos)`, `f = g + W * h`) or it silently
+   degenerates into BFS. BFS must be **bidirectional** and must not be cosine-capped.
+   `LinkCache.get_backlinks` (done, 2026-07-26) is the data layer it needs.
+3. **Explore** (`explore/bfs.py`, `explore/beam.py`) only once Connect is complete.
+
+**Every step must be non-destructive:** existing tests stay green without being edited, new
+parameters arrive with defaults, `/api/config` only gains fields, existing URLs keep working.
+(Held so far. Backlinks: +6 tests, none edited. Params: +15 tests, no assertion changed — only two
+test *doubles* gained `params=None` to match the new `run` signature. 59 fast tests green.)
+
+**No shared base above Connect and Explore yet.** A parent `Algorithm` class holding `__init__` and
+an anchor-parameterised ranking helper was proposed and deliberately deferred until Connect is
+entirely done — generalising from one mode is a guess. `ConnectAlgorithm` stays the only base.
 
 Every other module under `src/wikimap/` beyond `wiki/`, `embed.py`, `graph/`, `algorithms/`, and
 `server/` remains a placeholder holding only a docstring that states that file's responsibility
@@ -126,6 +161,13 @@ Wikipedia directly.
 - **Descriptive User-Agent from `.env`**, formatted `appname/version (contact)`. Wikimedia
   throttles or blocks generic agents at volume.
 - **Retry with a small delay** on fetch failure.
+- **Backlinks bypass `wikipedia-api` — deliberately.** `WikiClient.get_backlinks` issues the
+  MediaWiki `list=backlinks` query directly via `requests`, because the library's `page.backlinks`
+  paginates to exhaustion (no cap — "Cat" is six figures of results) and drops `blnamespace=0` on
+  continuation requests. Ours is capped at `config.BACKLINK_LIMIT` and re-sends the namespace filter
+  on every page. `WikiClient` is still the only class that talks to Wikipedia; that rule is intact.
+  Known accepted bias: the API returns backlinks in page-id order, so a capped fetch is an arbitrary
+  sample, not the most relevant one.
 - **Two-layer cache (`wiki/cache.py`), checked in order:** in-memory dict → disk
   (`data/*.json` or sqlite) → network. On a network fetch, write to **both** layers. Must be
   disk-backed, not memory-only, or every launch re-crawls from cold. No TTL for now; the

@@ -1,7 +1,9 @@
 <!doctype html>
 <!-- Mode switcher (Explore | Connect) + graph canvas + settings panel.
      Settings panel is generated from config so knobs stay in one place.
-     Step 5 (MVP): Connect only, knobs read-only from /api/config. -->
+     Step 6: Connect only, knobs are now live controls. Their VALUES and their
+     min/max both come from /api/config — nothing here hardcodes a number, so
+     changing config.py moves the sliders without touching this file. -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -30,7 +32,27 @@
       </label>
       <button id="run" type="submit">Run</button>
       <button id="stop" type="button" disabled>Stop</button>
-      <span id="knobs" class="knobs"></span>
+    </form>
+
+    <!-- Settings. Empty on purpose: app.js fills in value/min/max from /api/config
+         so the browser never holds its own copy of a knob (contract 1). -->
+    <form id="settings">
+      <label>
+        top-K
+        <input id="top_k" name="top_k" type="number" disabled />
+        <small id="top_k-range"></small>
+      </label>
+      <label>
+        max depth
+        <input id="max_depth" name="max_depth" type="number" disabled />
+        <small id="max_depth-range"></small>
+      </label>
+      <label>
+        max nodes
+        <input id="max_nodes" name="max_nodes" type="number" disabled />
+        <small id="max_nodes-range"></small>
+      </label>
+      <button id="reset-knobs" type="button" disabled>Reset</button>
     </form>
 
     <main>

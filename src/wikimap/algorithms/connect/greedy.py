@@ -7,8 +7,9 @@ The algorithm: from the seed, repeatedly hop to the single unvisited neighbour t
 looks *closest to the target* — where "close" is cosine similarity between page-title
 embeddings (decision B), and "neighbour" is capped to the top-K links by that same
 score (decision C). Pure greedy: it commits to the local best every tick and never
-backtracks. It reads its knobs from `config` (contract 1) and yields a `Step` per
-tick (contract 2); it knows nothing of the renderer or transport.
+backtracks. It takes its knobs from the `RunParams` handed to `run()` — whose defaults
+come from `config` (contract 1) — and yields a `Step` per tick (contract 2); it knows
+nothing of the renderer or transport.
 
 Why the visited check is load-bearing and not optional: the highest-similarity
 neighbour of a page is very often the page you just came from (they're semantically
@@ -19,15 +20,27 @@ the one bug we refuse to carry over.
 
 from collections.abc import Iterator
 
-from wikimap import config
 from wikimap.algorithms.base import ConnectAlgorithm
+from wikimap.config import RunParams
 from wikimap.graph.contracts import Edge, Node, Step
 
 
 class GreedyConnect(ConnectAlgorithm):
     """Greedy best-first Connect search. See module docstring."""
 
-    def run(self, seed: str, target: str) -> Iterator[Step]:
+    def run(
+        self, seed: str, target: str, params: RunParams | None = None
+    ) -> Iterator[Step]:
+        # None means "use the defaults". Built here rather than as a default argument
+        # value because a mutable/shared default object would be created once at
+        # function-definition time and reused by every call — the classic Python
+        # default-argument trap. A fresh one per run is both correct and cheap.
+        if params is None:
+            params = RunParams()
+
+        # All state below is LOCAL, not on self. That is what lets one shared
+        # GreedyConnect instance serve concurrent runs: each call to run() gets its
+        # own generator frame, so two searches can never see each other's `visited`.
         visited = {seed}
         current = seed
         depth = 0
@@ -42,7 +55,7 @@ class GreedyConnect(ConnectAlgorithm):
         )
 
         while current != target:
-            if depth >= config.MAX_DEPTH or node_count >= config.MAX_NODES:
+            if depth >= params.max_depth or node_count >= params.max_nodes:
                 yield Step(
                     note=f"stopped: hit cap at {current!r} "
                     f"(depth {depth}, {node_count} nodes)"
@@ -57,7 +70,7 @@ class GreedyConnect(ConnectAlgorithm):
                 key=lambda pair: pair[1],
                 reverse=True,
             )
-            top = scored[: config.TOP_K]
+            top = scored[: params.top_k]
 
             nodes = [Node(id=link, score=score, depth=depth + 1) for link, score in top]
             edges = [Edge(source=current, target=link) for link, _ in top]

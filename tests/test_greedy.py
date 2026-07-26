@@ -11,6 +11,7 @@ import pytest
 from wikimap import config
 from wikimap.algorithms.base import ConnectAlgorithm
 from wikimap.algorithms.connect.greedy import GreedyConnect
+from wikimap.config import RunParams
 from wikimap.graph.contracts import Edge, Node, Step
 
 
@@ -38,9 +39,9 @@ class _FakeEmbedCache:
         return self._scores.get(a, 0.0)
 
 
-def _run(links, scores, seed, target) -> list[Step]:
+def _run(links, scores, seed, target, params=None) -> list[Step]:
     algo = GreedyConnect(_FakeLinkCache(links), _FakeEmbedCache(scores))
-    return list(algo.run(seed, target))
+    return list(algo.run(seed, target, params))
 
 
 def _move_sources(steps: list[Step]) -> list[str]:
@@ -145,6 +146,54 @@ class TestStepShape:
         b = next(n for n in fanout.nodes if n.id == "B")
         assert b.score == pytest.approx(0.6)
         assert b.depth == 1  # one hop from the seed
+
+
+class TestRunParams:
+    """Step 6: the knobs arrive per run instead of being read off the module."""
+
+    def test_per_run_top_k_overrides_the_default(self):
+        links = {"A": ["B", "C", "D", "E"]}
+        scores = {"B": 0.9, "C": 0.8, "D": 0.7, "E": 0.6}
+        fanout = _run(
+            links, scores, seed="A", target="T", params=RunParams(top_k=2)
+        )[1]
+
+        assert [n.id for n in fanout.nodes] == ["B", "C"]  # capped at 2, best first
+
+    def test_per_run_max_depth_overrides_the_default(self):
+        chain = [f"A{i}" for i in range(8)]
+        links = {name: [chain[i + 1]] for i, name in enumerate(chain[:-1])}
+        scores = {name: i / 100 for i, name in enumerate(chain)}
+
+        steps = _run(
+            links, scores, seed=chain[0], target="T", params=RunParams(max_depth=2)
+        )
+
+        assert "hit cap" in steps[-1].note
+        assert len(_move_sources(steps)) == 2
+
+    def test_omitting_params_still_uses_config_defaults(self):
+        """Non-destructive: every pre-existing call site passes no params at all."""
+        links = {"A": [f"L{i}" for i in range(50)]}
+        scores = {f"L{i}": i / 100 for i in range(50)}
+        fanout = _run(links, scores, seed="A", target="T")[1]
+
+        assert len(fanout.nodes) == config.TOP_K
+
+    def test_values_are_clamped_to_the_locked_ceiling(self):
+        """Decision C caps K at 20. A docstring can't enforce that; __post_init__
+        does — so no caller, however wrong, can exceed it."""
+        assert RunParams(top_k=999).top_k == config.TOP_K_BOUNDS[1]
+        assert RunParams(top_k=-5).top_k == config.TOP_K_BOUNDS[0]
+        assert RunParams(max_depth=999).max_depth == config.MAX_DEPTH_BOUNDS[1]
+
+    def test_params_are_frozen(self):
+        """A run's settings must not change underneath it once it has started."""
+        from dataclasses import FrozenInstanceError
+
+        params = RunParams()
+        with pytest.raises(FrozenInstanceError):
+            params.top_k = 5
 
 
 class TestABC:

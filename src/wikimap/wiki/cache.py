@@ -2,47 +2,96 @@
 
 Checked in that order; a network fetch writes to BOTH layers. Must be disk-backed
 or every launch re-crawls from cold. No TTL for now — staleness is accepted.
+
+Caches both directions of the link graph: outbound links (`get_links`) and inbound
+ones (`get_backlinks`, for bidirectional Connect search). They are the same lookup
+shape over different data, so they share `_lookup` and differ only in which client
+method they call and which directory they persist to. Deliberately one class rather
+than two: algorithms receive a single cache object, so adding the reverse direction
+did not change `ConnectAlgorithm.__init__`.
 """
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote
 
 from wikimap.wiki.client import WikiClient
 
 DEFAULT_DATA_DIR = Path("data/links")
+DEFAULT_BACKLINK_DIR = Path("data/backlinks")
 
 
 class LinkCache:
-    """Two-layer cache in front of WikiClient.get_links.
+    """Two-layer cache in front of WikiClient's link lookups.
 
     Checked in order: in-memory dict -> disk (one JSON file per title) -> network.
     A network fetch writes to both layers, so the *next* call for the same title —
     even after a restart, since the disk layer persists — never touches the network.
+
+    Forward and backward links are cached in separate directories. They must never
+    share a namespace: both are "a list of titles related to X", so a collision
+    would return backlinks where links were asked for, silently and plausibly.
     """
 
-    def __init__(self, client: WikiClient, data_dir: Path | str = DEFAULT_DATA_DIR) -> None:
+    def __init__(
+        self,
+        client: WikiClient,
+        data_dir: Path | str = DEFAULT_DATA_DIR,
+        backlink_dir: Path | str = DEFAULT_BACKLINK_DIR,
+    ) -> None:
         self._client = client
         self._data_dir = Path(data_dir)
         self._data_dir.mkdir(parents=True, exist_ok=True)
+        self._backlink_dir = Path(backlink_dir)
+        self._backlink_dir.mkdir(parents=True, exist_ok=True)
         self._memory: dict[str, list[str]] = {}
+        self._backlink_memory: dict[str, list[str]] = {}
 
     def get_links(self, title: str) -> list[str]:
-        if title in self._memory:
-            return self._memory[title]
+        """Pages `title` links out to (ns0 only)."""
+        return self._lookup(
+            title, self._memory, self._data_dir, self._client.get_links
+        )
 
-        path = self._path_for(title)
+    def get_backlinks(self, title: str) -> list[str]:
+        """Pages that link in to `title` (ns0 only, capped by config.BACKLINK_LIMIT).
+
+        The backward half of a bidirectional search. Note the cached list is a
+        *capped* sample, not the complete backlink set — see the client for why.
+        """
+        return self._lookup(
+            title, self._backlink_memory, self._backlink_dir, self._client.get_backlinks
+        )
+
+    def _lookup(
+        self,
+        title: str,
+        memory: dict[str, list[str]],
+        directory: Path,
+        fetch: Callable[[str], list[str]],
+    ) -> list[str]:
+        """The memory -> disk -> network chain, once, for either direction.
+
+        `fetch` is the network fallback — passing the bound method in rather than
+        branching on a direction flag keeps the chain itself direction-agnostic.
+        """
+        if title in memory:
+            return memory[title]
+
+        path = self._path_for(directory, title)
         if path.exists():
-            links = json.loads(path.read_text(encoding="utf-8"))
-            self._memory[title] = links
-            return links
+            titles = json.loads(path.read_text(encoding="utf-8"))
+            memory[title] = titles
+            return titles
 
-        links = self._client.get_links(title)
-        self._memory[title] = links
-        path.write_text(json.dumps(links), encoding="utf-8")
-        return links
+        titles = fetch(title)
+        memory[title] = titles
+        path.write_text(json.dumps(titles), encoding="utf-8")
+        return titles
 
-    def _path_for(self, title: str) -> Path:
+    @staticmethod
+    def _path_for(directory: Path, title: str) -> Path:
         # quote() escapes filesystem-unsafe characters (/, :, ?, ...) that show up
         # in real titles ("Aliens: The Ride"), while staying legible on disk.
-        return self._data_dir / f"{quote(title, safe='')}.json"
+        return directory / f"{quote(title, safe='')}.json"

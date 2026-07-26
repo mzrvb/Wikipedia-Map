@@ -9,6 +9,240 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## 2026-07-26
+
+### Step 6 (per-run params) complete — knobs are live controls
+
+`RunParams` landed in `config.py`, `run()` gained a third argument, the server turns query params
+into one per request, and the frontend builds its controls from `/api/config`. **59 fast tests
+green** (15 new), ruff clean.
+
+Implementation notes worth keeping:
+
+- **`params: RunParams | None = None`, built inside the function**, not `params = RunParams()` as a
+  default argument value. A default argument object is created once at function-definition time and
+  shared by every call — the classic Python trap. Harmless for a frozen dataclass today; a
+  landmine the moment anything mutable joins it.
+- **Clamping lives in `__post_init__`** via `object.__setattr__` (normal assignment on a frozen
+  dataclass raises). This is what actually enforces decision C's K≤20 ceiling: the server's 422 only
+  covers HTTP callers, whereas any Python caller could otherwise construct `RunParams(top_k=999)`.
+  Written after yesterday's "a docstring is not a test" lesson — the ceiling is now enforced by code.
+- **Bounds are published, not hardcoded twice.** `/api/config` grew a `bounds` object; the route's
+  `Query(ge=…, le=…)` reads the same tuples. The frontend's inputs ship with no `min`/`max`/`value`
+  in the HTML at all and are disabled until the fetch fills them in, so the browser can never hold a
+  stale copy of a number that lives in `config.py`.
+- **Non-destructive, with one honest exception.** No assertion in any existing test changed. Two
+  *test doubles* needed `params=None` added to their `run` signatures (`_FakeAlgorithm`,
+  `_Exploding`) — an interface change necessarily reaches its fakes. Everything else, including the
+  bare `?seed=&target=` URL, works untouched.
+
+**Live verification** (warm `Cat → Astronomy`):
+
+```
+top_k=20  -> nodes per tick [1, 20, 20, 20, 20]
+top_k=5   -> [1, 5, 5, 5, 5]
+top_k=2   -> [1, 2, 2, 2, 2]
+max_depth=6 -> solved: 'Galactic astronomy' -> 'Astronomy' (score 1.000)
+max_depth=2 -> "stopped: hit cap at 'Spiral nebulae' (depth 2, 41 nodes)"
+top_k=21    -> HTTP 422
+```
+
+### Measured branching factor: ~364 median, not ~300 — and K is not a cost knob for greedy
+
+Measured over the 21 pages in `data/links/` (real cache, real pages this project has visited):
+
+| stat | links |
+| --- | --- |
+| median | 364 |
+| mean | 497 |
+| max | 1804 (`kanye west`) |
+| `Cat` | 1181 |
+
+So `TOP_K = 20` keeps **12.6%** of an average page's links. CLAUDE.md's "~300" was a slight
+underestimate. Note this is *not* the Wikipedia-wide figure — published stats put median outdegree
+around 12–20 across all articles, dragged down by millions of stubs. The pages a speedrun actually
+touches are popular, heavily-linked ones. Both numbers are right about different populations; the
+one that matters for cost modelling is ours.
+
+**The load-bearing discovery:** `greedy.py` embeds *every* link (line 56) and only then slices to
+`TOP_K` (line 60). Per-page cost is therefore O(outdegree), **independent of K**. For greedy, K
+controls only how many nodes get drawn — raising it to 100 costs nothing. K becomes a cost knob
+only for algorithms that expand more than one node per level, i.e. BFS and A*, where cost grows as
+K^depth. This means the settings UI's K slider means something completely different per algorithm,
+which the UI will eventually have to communicate.
+
+### BFS will be bidirectional, and will not be cosine-capped
+
+Two decisions, both following from the above.
+
+**Bidirectional.** To find an L-hop path, unidirectional BFS expands `sum(K^i for i < L)`; searching
+from both ends and meeting in the middle expands roughly `2 * sum(K^i for i < L/2)`. At K=20, a
+4-hop path costs 8,421 expansions unidirectionally versus **42** bidirectionally — ~200x. This is
+the difference between "impossible" and "feasible", so BFS is not worth building unidirectionally.
+
+**Correction to an earlier note in this entry:** it first said `wikipediaapi` exposes `.backlinks`
+so the reverse direction was free. It exposes it; it is not usable. Reading the library source
+turned up two blockers, both now pinned by tests:
+
+1. `Wikipedia.backlinks` paginates to exhaustion — `while "continue" in raw` with no cap. Accessing
+   `page.backlinks` on "Cat" would page through six figures of results: hundreds of requests, minutes
+   of hanging, no way to stop it early through the public API.
+2. Its continuation requests are rebuilt from the *original* params dict, so kwargs like
+   `blnamespace=0` are dropped after the first page. You would get ns0 results followed by
+   unfiltered ones — a silent correctness bug, the same family as the colon-filter bug this project
+   already refuses to inherit.
+
+**Decision: issue the backlinks query directly** (`requests`) inside `WikiClient`, capped, with
+`blnamespace=0` re-sent on every continuation. `WikiClient` remains the only class that talks to
+Wikipedia, so the data-layer rule holds, and CLAUDE.md already names the raw MediaWiki API as the
+documented upgrade path — this arrives earlier than planned and stays synchronous.
+
+**Accepted bias, recorded so BFS results aren't over-trusted:** `BACKLINK_LIMIT = 500` is one API
+round trip, and MediaWiki returns backlinks in page-id order, *not* relevance order. So the cap
+takes an arbitrary 500, not the best 500. Ranking them by relevance would require fetching all of
+them first, which is exactly what the cap exists to prevent. No cheap fix exists.
+
+**Live verification** (not just mocks): `Cat` returned exactly 25 backlinks in 0.53s with `limit=25`,
+one request, no namespaced titles. The library's version would have paged through ~100k.
+
+**Not cosine-capped.** Ranking links by cosine-to-target and keeping the top 20 *is* the greedy
+bias. A BFS built on that filter is not a neutral baseline — it is greedy-with-more-branching, and
+cannot answer "did greedy miss a shorter route" because it searches the graph greedy already
+chose. If BFS is to be a baseline it must cap by something unbiased (random-K, or uncapped at low
+depth). Recorded because the brief calls BFS a "correctness baseline" and that claim is only true
+under this condition.
+
+### A* heuristic: cosine must be rescaled into hop units before it can be added to `g`
+
+`f = g + h` requires both terms in the same units. `g` counts hops (1, 2, 3…); raw cosine lives in
+[0, 1]. Adding them directly means the heuristic can never outweigh even one hop, and A* silently
+degenerates into BFS. This is the single easiest way to get A* wrong, so it is recorded before the
+code is written.
+
+Decided form:
+
+```
+h = LAMBDA * (1 - cosine(page, target))       # cosine -> estimated hops remaining
+f = g + W * h                                  # W is the settings-UI dial
+```
+
+`LAMBDA` ≈ 4, grounded in published Wikipedia path-length measurements (~3.4–3.9 average clicks
+between articles). `LAMBDA` should be *calibrated* against our own runs rather than left at 4 — we
+already log path length and can record the seed↔target cosine for each solved run.
+
+`W` makes weighted A* span the whole spectrum: `W = 0` ignores the heuristic (BFS behaviour),
+`W = 1` is balanced, `W -> large` ignores hop count (greedy behaviour). One algorithm plus one
+slider therefore demonstrates greedy and BFS as endpoints — which is the comparison the brief
+wanted from building three separate algorithms.
+
+**Explicitly not claimed: optimality.** A*'s shortest-path guarantee requires an *admissible*
+heuristic (never overestimates true remaining cost). Cosine similarity is a semantic estimate with
+no such bound, so this A* is a good search, not a proof of shortest path. The textbook-standard
+admissible option (ALT: landmark distances plus the triangle inequality) needs the whole graph
+precomputed offline and is therefore ruled out on live Wikipedia. Decision B already accepted an
+estimate over ground truth; this just records that the guarantee does not sneak back in with A*.
+
+### Enriched embeddings: anchor-only, and never mixed within one comparison
+
+Considered embedding "title + summary" instead of bare titles, to give the model more than two
+words to work with. **Cannot be done for all embeddings:** ranking one page's links needs ~364–497
+embeddings (measured above) and `wikipedia-api` fetches summaries one page at a time, so enriching
+candidates would mean ~500 extra HTTP requests *per expansion*. Title-only at ranking time is
+forced by cost, not preference.
+
+**Where it is affordable is the anchor** — the target in Connect, the seed in Explore. That is one
+page per run, and every single comparison is made against it, so improving that one vector improves
+all ~500 comparisons for the price of one fetch.
+
+**The constraint that makes this safe:** never mix enriched and bare representations on the *same
+side* of a comparison. Text length shifts a sentence-transformer's output, so an enriched vector and
+a bare vector are not directly comparable. Anchor-enriched vs all-candidates-bare is fine, because
+ranking only cares about relative order and a fixed anchor biases every candidate identically. Some
+candidates enriched and others bare would silently corrupt the ranking.
+
+**Correctness hazard this creates, to handle before implementing:** `EmbeddingCache._path_for` keys
+on the title alone, and `data/embeddings/` already holds **9,616** bare-title vectors. Changing what
+`embed(title)` returns without changing the key would serve enriched vectors for bare requests —
+wrong, plausible-looking, and invisible. Enrichment must live under a separate cache namespace
+(e.g. a `__rich` key suffix), not replace the existing one.
+
+**Status: not implemented, and gated behind a measurement.** Enrichment could plausibly make things
+*worse* — summaries add generic filler ("is an American...") that dilutes topical signal. It goes in
+behind a config flag with a slow-marked test comparing ranking quality both ways, keeping whichever
+wins. Not adopted on plausibility alone.
+
+### Roadmap replan: finish Connect before starting Explore
+
+The brief's step 6 is the Explore settings UI and step 7 is the rest of Connect. **Reversed by
+decision, 2026-07-26:** Connect mode gets completed first, then Explore. Reasoning — Connect is the
+only mode that exists (greedy ships and works), so finishing it produces a coherent, shippable mode
+rather than two half-modes; and each Connect algorithm added is another consumer proving the shared
+pieces before Explore inherits them.
+
+Consequences recorded so we don't rediscover them:
+
+- **No shared base above Connect and Explore yet.** A parent `Algorithm` class holding `__init__`
+  (caches) and an anchor-parameterised link-ranking helper was proposed and **deliberately
+  deferred** until Connect is entirely complete. Rationale: an abstraction generalised from one
+  mode's needs is a guess; generalising after three Connect algorithms exist means the shared shape
+  is observed rather than predicted. `ConnectAlgorithm` stays the only base for now, and
+  `explore/` stays untouched.
+- **Non-destructive is the constraint.** Every step must leave the existing 30 tests green without
+  editing them. Practically that means new parameters arrive with defaults, `/api/config` only
+  gains fields, and existing request URLs keep working.
+
+### `TOP_K = 20` resolved: 20 is a ceiling, not a fixed value
+
+Decision C called `TOP_K` "locked", which read as immovable and contradicted contract 1's promise
+that the settings UI turns these dials. Resolved: **what decision C locks is the mechanism** (rank
+links by cosine similarity to the anchor, keep the best K) **and the upper bound.** K may vary
+below 20 and may never exceed it. Bounds recorded in `config.py` as `TOP_K_BOUNDS = (0, 20)`.
+
+Open caveat, flagged not fixed: a floor of 0 keeps no candidates, so a Connect run dead-ends on tick
+one. Legal but useless; raising the floor to 1 is the obvious call when these stop being comments
+and become validated constants.
+
+### Per-run params will travel as a `run()` argument, not constructor state
+
+Design settled ahead of implementation. `RunParams` (a frozen dataclass, defaults sourced from the
+`config` constants so the numbers live in exactly one place) will be passed as
+`run(seed, target, params=None)` rather than injected at construction. Three reasons:
+
+- It preserves the split `base.py` already documents — caches are long-lived shared infrastructure
+  and belong in `__init__`; the *job* arrives per call, and knobs are part of the job.
+- Mutating module globals to honor a user's setting races across concurrent requests (two tabs,
+  one stomps the other). Per-run values must travel as arguments; this is the concurrency rule
+  already recorded in `LEARN.md`.
+- `_algorithm()` is an `@lru_cache(maxsize=1)` singleton. Params in `__init__` would force the
+  cache to key on params, building a fresh algorithm per knob combination. Params in `run` leave
+  the singleton — and its warm caches — untouched.
+
+`RunParams` will live in `config.py`, not `contracts.py`: contracts promises it "imports nothing
+from the rest of the project", and defaults have to come from config.
+
+### Known gap: `MoveEvaluation.from_` does not actually serialize as `from`
+
+Surfaced while walking through `asdict` in the step-5 code review. `contracts.py`'s
+`MoveEvaluation` docstring claims: *"When this is serialized for the frontend, that maps back to a
+plain `from` key."* **No code does that.** `dataclasses.asdict` copies field names verbatim, so the
+JSON is `{"from_": ...}`. Verified by running it.
+
+Harmless right now — step 5 streams `Step` only, and `MoveEvaluation` never crosses the wire. It
+becomes real in **step 8** (grading), which is when it must be fixed. Deliberately not fixed now:
+there is no consumer to fix it against, and inventing a serializer ahead of `feedback.py` would
+guess at a shape step 8 should decide.
+
+Two options when the time comes, preference noted: a small explicit `to_json()` on
+`MoveEvaluation` (keeps the rename visible at the call site), rather than
+`asdict(ev, dict_factory=...)` (hides it in a callback). The docstring stays as-is because it
+describes the *intended* contract; this entry is what records that the implementation hasn't caught
+up.
+
+General lesson logged because it will recur: **a docstring is not a test.** This one asserted
+behaviour confidently and was wrong from the moment it was written.
+
+---
+
 ## 2026-07-25
 
 ### Roadmap step 5 (server + SSE + live frontend) complete — MVP works end-to-end

@@ -108,9 +108,12 @@ form.addEventListener("submit", (event) => {
   runBtn.disabled = true;
   stopBtn.disabled = false;
 
-  // encodeURIComponent so titles with &, ?, # or spaces survive the query string.
-  const url = `/api/connect?seed=${encodeURIComponent(seed)}&target=${encodeURIComponent(target)}`;
-  source = new EventSource(url);
+  // URLSearchParams handles the encoding for every value at once, so titles with
+  // &, ?, # or spaces survive the query string. The knobs ride along as ordinary
+  // query params; omitting them entirely would still work, since the server
+  // defaults each one to config's value.
+  const query = new URLSearchParams({ seed, target, ...knobValues() });
+  source = new EventSource(`/api/connect?${query}`);
 
   // One handler per event name the server emits. This is why _sse() writes an
   // "event:" line — without it everything would arrive as a generic "message".
@@ -139,13 +142,47 @@ stopBtn.addEventListener("click", () => {
   log("stopped", "status");
 });
 
-// --- config readout --------------------------------------------------------
-// Displayed, not owned: contract 1 keeps the knobs in config.py, so the frontend
-// asks the server rather than hardcoding numbers that could drift.
+// --- settings --------------------------------------------------------------
+// Owned by config.py, rendered here (contract 1). The inputs ship disabled and with
+// no value/min/max in the HTML; everything below is filled in from /api/config, so
+// the browser never keeps a copy of a number that could drift out of sync. If the
+// fetch fails the controls simply stay disabled and the server's defaults apply.
+const KNOBS = ["top_k", "max_depth", "max_nodes"];
+let defaults = null;
+
+function knobValues() {
+  // Read straight off the inputs at submit time, not from a cached object — the
+  // DOM is the single source of truth for what the user currently has selected.
+  const values = {};
+  for (const knob of KNOBS) {
+    const input = document.getElementById(knob);
+    if (input && input.value !== "") values[knob] = input.value;
+  }
+  return values;
+}
+
+function applyDefaults() {
+  for (const knob of KNOBS) document.getElementById(knob).value = defaults[knob];
+}
+
 fetch("/api/config")
   .then((r) => r.json())
   .then((cfg) => {
-    document.getElementById("knobs").textContent =
-      `top-K ${cfg.top_k} · max depth ${cfg.max_depth} · max nodes ${cfg.max_nodes}`;
+    defaults = { top_k: cfg.top_k, max_depth: cfg.max_depth, max_nodes: cfg.max_nodes };
+    for (const knob of KNOBS) {
+      const [min, max] = cfg.bounds[knob];
+      const input = document.getElementById(knob);
+      input.min = min;
+      input.max = max;
+      input.disabled = false;
+      // The same bounds the server validates against, so the browser can't offer a
+      // value that would come back 422. The server still checks — client-side
+      // limits are a convenience, never the enforcement.
+      document.getElementById(`${knob}-range`).textContent = `${min}–${max}`;
+    }
+    applyDefaults();
+    const reset = document.getElementById("reset-knobs");
+    reset.disabled = false;
+    reset.addEventListener("click", applyDefaults);
   })
   .catch(() => {});

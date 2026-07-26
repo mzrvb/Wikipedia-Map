@@ -76,7 +76,54 @@ header .mode { color: var(--muted); font-size: 12px; }
 #run-form button#stop { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
 #run-form button:disabled { opacity: 0.45; cursor: default; }
 
-.knobs { margin-left: auto; color: var(--muted); font-size: 12px; }
+/* Settings row. Shares #run-form's control styling but with narrow numeric inputs,
+   so the knobs read as secondary to the seed/target the run is actually about. */
+#settings {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+#settings label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+#settings input {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: var(--text);
+  font-size: 13px;
+  width: 78px;
+}
+
+#settings input:focus { outline: 1px solid var(--accent); }
+#settings input:disabled { opacity: 0.4; }
+#settings small { color: var(--muted); font-size: 11px; text-transform: none; letter-spacing: 0; }
+
+#settings button {
+  margin-left: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 12px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#settings button:disabled { opacity: 0.45; cursor: default; }
 
 main {
   flex: 1;

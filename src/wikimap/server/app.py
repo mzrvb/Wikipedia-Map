@@ -23,8 +23,8 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator
-from dataclasses import asdict
-from functools import lru_cache
+from dataclasses import asdict #
+from functools import lru_cache # higher order functions
 from pathlib import Path
 
 from fastapi import FastAPI, Query
@@ -34,6 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from wikimap import config
 from wikimap.algorithms.base import ConnectAlgorithm
 from wikimap.algorithms.connect.greedy import GreedyConnect
+from wikimap.config import RunParams
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,10 @@ def _sse(event: str, data: dict) -> str:
     That trailing "\\n\\n" is the whole protocol — omit it and the browser waits
     forever for a message it already has.
     """
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n" # blank link at the end marks msg completion for delivery
 
 
-def _stream(seed: str, target: str) -> Iterator[str]:
+def _stream(seed: str, target: str, params: RunParams) -> Iterator[str]: # draws the actual frames of the generator
     """Turn the algorithm's Step stream into SSE frames, one per tick.
 
     This is the generator chain that makes live drawing work: `run()` yields a Step,
@@ -82,11 +83,15 @@ def _stream(seed: str, target: str) -> Iterator[str]:
     and only then does the search resume for the next tick. Nothing is buffered into
     a list at any layer, which is exactly why the graph grows on screen instead of
     appearing all at once at the end.
+
+    `params` is threaded straight through to `run()` rather than stashed anywhere.
+    This function is called once per request, so the settings live in this generator's
+    own frame — two concurrent runs cannot see each other's.
     """
     yield _sse("status", {"message": f"Searching {seed} → {target}…"})
     try:
         algo = _algorithm()
-        for step in algo.run(seed, target):
+        for step in algo.run(seed, target, params):
             # asdict() walks the frozen dataclass (and its nested Node/Edge lists)
             # into plain dicts — json.dumps can't serialize a dataclass directly.
             yield _sse("step", asdict(step))
@@ -108,6 +113,13 @@ def read_config() -> dict:
         "max_depth": config.MAX_DEPTH,
         "max_nodes": config.MAX_NODES,
         "embedding_model": config.EMBEDDING_MODEL,
+        # Bounds so the frontend can build controls without hardcoding ranges —
+        # contract 1 applies to the *limits* as much as to the values.
+        "bounds": {
+            "top_k": list(config.TOP_K_BOUNDS),
+            "max_depth": list(config.MAX_DEPTH_BOUNDS),
+            "max_nodes": list(config.MAX_NODES_BOUNDS),
+        },
     }
 
 
@@ -115,15 +127,30 @@ def read_config() -> dict:
 def connect(
     seed: str = Query(min_length=1, max_length=200),
     target: str = Query(min_length=1, max_length=200),
+    top_k: int = Query(
+        config.TOP_K, ge=config.TOP_K_BOUNDS[0], le=config.TOP_K_BOUNDS[1]
+    ),
+    max_depth: int = Query(
+        config.MAX_DEPTH, ge=config.MAX_DEPTH_BOUNDS[0], le=config.MAX_DEPTH_BOUNDS[1]
+    ),
+    max_nodes: int = Query(
+        config.MAX_NODES, ge=config.MAX_NODES_BOUNDS[0], le=config.MAX_NODES_BOUNDS[1]
+    ),
 ) -> StreamingResponse:
     """Stream a Connect run as Server-Sent Events.
 
     SSE not WebSockets, per the locked stack decision: this is one-way (server pushes
     Steps, browser never replies mid-run), and SSE is plain HTTP with auto-reconnect
     built into the browser. WebSockets would buy bidirectionality we don't need yet.
+
+    The knobs are optional query params defaulting to config's values, so the original
+    `?seed=&target=` URL still works. Range checking is FastAPI's job via `ge`/`le` —
+    out-of-range values get a 422 here, at the edge, so the algorithm never has to
+    know that user input exists. The bounds themselves come from config, not literals.
     """
+    params = RunParams(top_k=top_k, max_depth=max_depth, max_nodes=max_nodes)
     return StreamingResponse(
-        _stream(seed, target),
+        _stream(seed, target, params),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

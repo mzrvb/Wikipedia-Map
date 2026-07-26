@@ -12,8 +12,9 @@ Both modes build the graph live on screen as the search runs.
 
 ## Status
 
-**Working MVP.** Roadmap steps 1–5 done — you can run a Connect search in the browser and watch the
-graph build live. 38 fast tests green, `ruff check` clean.
+**Working MVP with live settings.** Roadmap steps 1–6 done — run a Connect search in the browser,
+watch the graph build live, and change the search knobs between runs. 59 fast tests green,
+`ruff check` clean.
 
 | Step | What | State |
 | --- | --- | --- |
@@ -22,7 +23,9 @@ graph build live. 38 fast tests green, `ruff check` clean.
 | 3 | Graph model + contracts — `graph/contracts.py` (`Step`, `Grade`, …), `graph/model.py` | done |
 | 4 | First Connect algorithm — `algorithms/base.py` ABC + `connect/greedy.py` | done |
 | 5 | FastAPI + SSE server streaming Steps to a vis-network frontend | done |
-| 6 | Explore settings UI — knobs as live controls, `explore/` algorithms | next |
+| 6 | Per-run params — knobs travel as `run()` arguments, wired to UI controls | done |
+| 7 | Rest of Connect — `connect/astar.py`, then bidirectional `connect/bfs.py` | next |
+| 8 | Explore mode — `explore/bfs.py`, `explore/beam.py` | after Connect |
 
 Sample run — `Cat → Astronomy`, solved in 4 hops with the similarity score climbing each move:
 
@@ -40,9 +43,15 @@ two-layer cache makes the same run near-instant afterwards (<0.01s).
 Everything under `src/wikimap/` beyond `wiki/`, `embed.py`, `graph/`, and `algorithms/` is still
 a placeholder — a module docstring stating that file's responsibility, no implementation.
 
-Note a deviation from the brief's ordering: brief §6 step 4 is headless *Explore*
-(`explore/bfs.py`); what was actually built is Connect's greedy. Steps 5+ are unaffected — the
-server work is the same either way — but the rationale was never recorded.
+Two deviations from the brief's ordering, both deliberate:
+
+- Brief §6 step 4 is headless *Explore* (`explore/bfs.py`); what was actually built is Connect's
+  greedy. Steps 5+ are unaffected — the server work is the same either way — but the rationale
+  was never recorded.
+- The brief puts the Explore settings UI at step 6 and the rest of Connect at step 7. **Reversed
+  on 2026-07-26:** Connect is finished first so one mode is coherent and shippable, and so the
+  pieces Explore will share are proven by several Connect algorithms before being generalised.
+  See `HISTORY.md`.
 
 ## Setup
 
@@ -74,7 +83,12 @@ uvicorn wikimap.server.app:app --reload
 | --- | --- |
 | `GET /` | The frontend (form, graph canvas, run log) |
 | `GET /api/connect?seed=&target=` | SSE stream — one `step` event per algorithm tick |
-| `GET /api/config` | The knobs, read-only (contract 1: the frontend never hardcodes them) |
+| `GET /api/connect?…&top_k=&max_depth=&max_nodes=` | Same, with per-run knobs. All optional; out-of-range values give a 422 |
+| `GET /api/config` | The knobs *and their bounds*, read-only (contract 1: the frontend never hardcodes them) |
+
+Settings are per request, not global state — two browser tabs can run different `top_k` values
+without interfering. `top_k` is capped at 20 (locked decision C: uncapped expansion reaches ~27M
+nodes by depth 3).
 
 ## Layout
 

@@ -60,6 +60,81 @@ class TestWikiClient:
         assert client._wiki.page.call_count == 2
 
 
+def _api_response(titles: list[str], continue_token: str | None = None):
+    """Fake requests.Response for a list=backlinks query."""
+    payload = {"query": {"backlinks": [{"title": t} for t in titles]}}
+    if continue_token:
+        payload["continue"] = {"blcontinue": continue_token}
+    response = MagicMock()
+    response.json.return_value = payload
+    return response
+
+
+class TestBacklinks:
+    """The backward half of bidirectional search.
+
+    These pin the two library bugs get_backlinks exists to avoid: unbounded
+    pagination, and namespace filtering being dropped on continuation requests.
+    """
+
+    def test_returns_titles_and_filters_namespace_server_side(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient()
+
+        with patch("wikimap.wiki.client.requests.get") as mock_get:
+            mock_get.return_value = _api_response(["Cat", "Aliens: The Ride"])
+            backlinks = client.get_backlinks("Astronomy")
+
+        assert backlinks == ["Cat", "Aliens: The Ride"]
+        _, kwargs = mock_get.call_args
+        assert kwargs["params"]["blnamespace"] == 0
+        assert kwargs["params"]["bltitle"] == "Astronomy"
+        assert kwargs["headers"]["User-Agent"] == "test/0.0 (test@example.com)"
+
+    def test_stops_at_limit_instead_of_paginating_forever(self, monkeypatch):
+        """The library's version loops until the API stops offering a continue
+        token. A page like "Cat" would page through six figures of backlinks."""
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient()
+
+        # Every response offers another continue token — an infinite feed.
+        with patch("wikimap.wiki.client.requests.get") as mock_get:
+            mock_get.side_effect = lambda *a, **k: _api_response(
+                ["A", "B", "C"], continue_token="more"
+            )
+            backlinks = client.get_backlinks("Cat", limit=7)
+
+        assert len(backlinks) == 7
+        assert mock_get.call_count == 3  # 3+3+3 = 9 collected, truncated to 7
+
+    def test_namespace_filter_survives_continuation(self, monkeypatch):
+        """wikipediaapi rebuilds continuation requests from the original params and
+        drops kwargs, so its ns filter applies to page 1 only. Ours must not."""
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient()
+
+        with patch("wikimap.wiki.client.requests.get") as mock_get:
+            mock_get.side_effect = [
+                _api_response(["A"], continue_token="page2"),
+                _api_response(["B"]),
+            ]
+            client.get_backlinks("Astronomy", limit=500)
+
+        second_call_params = mock_get.call_args_list[1].kwargs["params"]
+        assert second_call_params["blnamespace"] == 0
+        assert second_call_params["blcontinue"] == "page2"
+
+    def test_retries_then_gives_up(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient(retries=2, delay=0)
+
+        with patch("wikimap.wiki.client.requests.get") as mock_get:
+            mock_get.side_effect = RuntimeError("boom")
+            assert client.get_backlinks("Anything") == []
+
+        assert mock_get.call_count == 2
+
+
 class TestLinkCache:
     def test_second_call_hits_memory_not_network(self, tmp_path):
         client = MagicMock()
@@ -96,3 +171,33 @@ class TestLinkCache:
         files = list(tmp_path.glob("*.json"))
         assert len(files) == 1
         assert json.loads(files[0].read_text()) == ["A", "B"]
+
+    def test_backlinks_cache_the_same_way(self, tmp_path):
+        client = MagicMock()
+        client.get_backlinks.return_value = ["Cat", "Dog"]
+        cache = LinkCache(
+            client, data_dir=tmp_path / "links", backlink_dir=tmp_path / "backlinks"
+        )
+
+        first = cache.get_backlinks("Astronomy")
+        second = cache.get_backlinks("Astronomy")
+
+        assert first == second == ["Cat", "Dog"]
+        client.get_backlinks.assert_called_once_with("Astronomy")
+        assert (tmp_path / "backlinks").glob("*.json")
+
+    def test_directions_do_not_share_a_namespace(self, tmp_path):
+        """Both directions are "a list of titles related to X". If they shared a
+        cache key, asking for links would plausibly return backlinks instead."""
+        client = MagicMock()
+        client.get_links.return_value = ["forward"]
+        client.get_backlinks.return_value = ["backward"]
+        cache = LinkCache(
+            client, data_dir=tmp_path / "links", backlink_dir=tmp_path / "backlinks"
+        )
+
+        assert cache.get_links("Astronomy") == ["forward"]
+        assert cache.get_backlinks("Astronomy") == ["backward"]
+        # And again, now that both layers are warm.
+        assert cache.get_links("Astronomy") == ["forward"]
+        assert cache.get_backlinks("Astronomy") == ["backward"]

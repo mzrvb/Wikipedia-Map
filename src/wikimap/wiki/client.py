@@ -3,15 +3,25 @@
 Rules: namespace 0 only, filtered with `p.ns == 0` (never a colon-in-title check);
 descriptive User-Agent from .env as `appname/version (contact)`; retry with a small
 delay on failure. Synchronous (`wikipedia-api`) until caching proves insufficient.
+
+Outbound links go through `wikipedia-api`. Backlinks do NOT — see `get_backlinks`
+for why the library's version is unusable here. Both still live in this one class,
+so the rule "nothing else talks to Wikipedia directly" is intact.
 """
 
 import os
 import time
 
+import requests
 import wikipediaapi
 from dotenv import load_dotenv
 
+from wikimap.config import BACKLINK_LIMIT
+
 load_dotenv()
+
+# Per-request page cap the MediaWiki API enforces on list=backlinks.
+_API_MAX_PER_REQUEST = 500
 
 
 class WikiClient:
@@ -31,6 +41,10 @@ class WikiClient:
         self._wiki = wikipediaapi.Wikipedia(user_agent=user_agent, language=language) # wikipedia user shit
         self._retries = retries # set retries
         self._delay = delay # set delay
+        # Kept for the raw backlinks query below, which doesn't go through wikipediaapi
+        # and so has to set its own headers.
+        self._user_agent = user_agent
+        self._api_url = f"https://{language}.wikipedia.org/w/api.php"
 
     def exists(self, title: str) -> bool:
         return self._wiki.page(title).exists()
@@ -49,6 +63,72 @@ class WikiClient:
             try:
                 page = self._wiki.page(title)
                 return [t for t, p in page.links.items() if p.ns == 0]
+            except Exception:
+                if attempt == self._retries:
+                    return []
+                time.sleep(self._delay)
+        return []
+
+    def get_backlinks(self, title: str, limit: int = BACKLINK_LIMIT) -> list[str]:
+        """Return pages that link TO `title` (ns0 only), capped at `limit`.
+
+        This is the reverse direction of `get_links`, and it exists for bidirectional
+        Connect search: walking forward from the seed and backward from the target
+        turns a K^L search into roughly 2 * K^(L/2).
+
+        Why this bypasses wikipedia-api. The library exposes `page.backlinks`, but it
+        is unusable at our scale for two reasons, both read out of its source:
+
+        1. It paginates to exhaustion — a `while "continue" in raw` loop with no cap.
+           "Cat" has six figures of backlinks, so one property access becomes hundreds
+           of requests and minutes of hanging. There is no public way to stop it early.
+        2. Its continuation requests are built from the *original* params dict, so any
+           kwargs you pass (like `blnamespace=0`) are silently dropped after the first
+           page — you would get ns0 results followed by unfiltered ones.
+
+        So the query is issued directly here instead: capped, and with `blnamespace=0`
+        re-sent on every continuation. That keeps namespace filtering server-side,
+        which is cheaper than fetching everything and filtering locally. This is still
+        the only class talking to Wikipedia, so the data-layer rule holds — and CLAUDE.md
+        already names the raw MediaWiki API as the documented upgrade path.
+
+        Retries on transient failures; returns [] once retries are exhausted, matching
+        `get_links` rather than raising into the middle of a search.
+        """
+        base_params = {
+            "action": "query",
+            "list": "backlinks",
+            "bltitle": title,
+            "blnamespace": 0,  # ns0 server-side — the same rule as get_links' p.ns == 0
+            "bllimit": min(limit, _API_MAX_PER_REQUEST),
+            "format": "json",
+            "formatversion": 2,
+        }
+
+        for attempt in range(1, self._retries + 1):
+            try:
+                titles: list[str] = []
+                params = dict(base_params)
+                while len(titles) < limit:
+                    response = requests.get(
+                        self._api_url,
+                        params=params,
+                        headers={"User-Agent": self._user_agent},
+                        timeout=30,
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                    titles.extend(
+                        entry["title"]
+                        for entry in payload.get("query", {}).get("backlinks", [])
+                    )
+                    token = payload.get("continue", {}).get("blcontinue")
+                    if not token:
+                        break
+                    # Rebuilt from base_params, not mutated in place — this is exactly
+                    # the bug noted above, and rebuilding is what avoids it.
+                    params = dict(base_params, blcontinue=token)
+                return titles[:limit]
             except Exception:
                 if attempt == self._retries:
                     return []

@@ -21,9 +21,11 @@ class _FakeAlgorithm:
     def __init__(self, steps: list[Step]):
         self._steps = steps
         self.calls: list[tuple[str, str]] = []
+        self.params = []
 
-    def run(self, seed: str, target: str):
+    def run(self, seed: str, target: str, params=None):
         self.calls.append((seed, target))
+        self.params.append(params)
         yield from self._steps
 
 
@@ -120,7 +122,7 @@ def test_connect_reports_algorithm_failure_in_band(client, monkeypatch):
     in the UI rather than looking like a silent hang."""
 
     class _Exploding:
-        def run(self, seed, target):
+        def run(self, seed, target, params=None):
             yield Step(note="first tick")
             raise RuntimeError("wikipedia is on fire")
 
@@ -144,3 +146,85 @@ def test_connect_reports_algorithm_failure_in_band(client, monkeypatch):
 )
 def test_connect_rejects_bad_query_params(client, params):
     assert client.get("/api/connect", params=params).status_code == 422
+
+
+class TestRunParamsOverTheWire:
+    """Step 6: knobs travel per request. These pin the three things that make that
+    safe — defaults still apply, user values reach the algorithm, and out-of-range
+    values are rejected at the edge rather than clamped somewhere invisible."""
+
+    def test_defaults_apply_when_no_knobs_are_given(self, client, fake_algo):
+        """The original ?seed=&target= URL must keep working untouched."""
+        from wikimap import config
+
+        algo = fake_algo([Step(note="only")])
+        client.get("/api/connect", params={"seed": "Cat", "target": "Astronomy"})
+
+        assert algo.params[0] == config.RunParams()
+        assert algo.params[0].top_k == config.TOP_K
+
+    def test_user_values_reach_the_algorithm(self, client, fake_algo):
+        algo = fake_algo([Step(note="only")])
+
+        client.get(
+            "/api/connect",
+            params={
+                "seed": "Cat",
+                "target": "Astronomy",
+                "top_k": 5,
+                "max_depth": 2,
+                "max_nodes": 50,
+            },
+        )
+
+        assert algo.params[0].top_k == 5
+        assert algo.params[0].max_depth == 2
+        assert algo.params[0].max_nodes == 50
+
+    def test_config_endpoint_publishes_bounds(self, client):
+        """The frontend builds its controls from these, so they can't be absent."""
+        from wikimap import config
+
+        bounds = client.get("/api/config").json()["bounds"]
+
+        assert bounds["top_k"] == list(config.TOP_K_BOUNDS)
+        assert bounds["max_depth"] == list(config.MAX_DEPTH_BOUNDS)
+        assert bounds["max_nodes"] == list(config.MAX_NODES_BOUNDS)
+
+    @pytest.mark.parametrize(
+        "knob,value",
+        [
+            ("top_k", 21),  # above decision C's locked ceiling of 20
+            ("top_k", -1),
+            ("max_depth", 0),
+            ("max_depth", 99),
+            ("max_nodes", 1),
+            ("max_nodes", 99999),
+        ],
+    )
+    def test_out_of_range_knobs_are_rejected(self, client, knob, value):
+        response = client.get(
+            "/api/connect",
+            params={"seed": "Cat", "target": "Astronomy", knob: value},
+        )
+        assert response.status_code == 422
+
+    def test_concurrent_runs_do_not_share_settings(self, client, fake_algo):
+        """The whole reason params are an argument and not module state: two runs
+        with different K must not see each other's value."""
+        algo = fake_algo([Step(note="only")])
+
+        client.get(
+            "/api/connect",
+            params={"seed": "Cat", "target": "Astronomy", "top_k": 3},
+        )
+        client.get(
+            "/api/connect",
+            params={"seed": "Dog", "target": "Biology", "top_k": 17},
+        )
+
+        assert [p.top_k for p in algo.params] == [3, 17]
+        # And config itself was never written to.
+        from wikimap import config
+
+        assert config.TOP_K == 20

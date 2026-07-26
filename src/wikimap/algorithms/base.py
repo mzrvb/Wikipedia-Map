@@ -18,6 +18,7 @@ from abc import ABC, abstractmethod #
 from collections.abc import Iterator # Iterator from standard python library (collections.abc)
 from typing import TYPE_CHECKING
 
+from wikimap.config import RunParams
 from wikimap.graph.contracts import Step
 
 if TYPE_CHECKING:
@@ -42,8 +43,17 @@ class ConnectAlgorithm(ABC):
         self._embed_cache = embed_cache
 
     @abstractmethod
-    def run(self, seed: str, target: str) -> Iterator[Step]:
+    def run(
+        self, seed: str, target: str, params: RunParams | None = None
+    ) -> Iterator[Step]:
         """Yield one Step per tick until seed reaches target (or a cap trips).
+
+        `params` carries this run's knob settings. It is an argument rather than
+        constructor state because the caches above are shared infrastructure that
+        outlives any single request, while settings vary *per request* — two browser
+        tabs searching with different K must not see each other's values. Defaulting
+        to None (meaning "use config's defaults") keeps every existing call site and
+        test working unchanged.
 
         Abstract and inert on purpose — the body declares nothing runs. Note it is
         NOT written as a generator (no `yield` here): a `yield` would turn this into a

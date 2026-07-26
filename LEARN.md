@@ -46,6 +46,14 @@ _(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood
   it has to travel *as an argument*, not as mutable module state.** Still "refining" because I haven't
   hit a concurrency bug in practice yet — holding it as principle. For step 4 we deliberately read
   `config.TOP_K` directly (no server exists to race), and switch to per-run params when the UI lands.
+  - **Follow-up (step 6 built, 2026-07-26) — the switch happened, exactly as planned above.**
+    `greedy.py` no longer mentions `config` at all; it reads `params.top_k` / `params.max_depth` /
+    `params.max_nodes` off a `RunParams` handed to `run()`. What made it click seeing it built: the
+    constants didn't go away, they became the *dataclass field defaults*, so the number is still
+    written in one place and nothing mutates. And the test that proves the point is
+    `test_concurrent_runs_do_not_share_settings` — two requests with `top_k=3` and `top_k=17` reach
+    the algorithm as `[3, 17]`, and `config.TOP_K` is still 20 afterwards. **The global was never
+    written to; the value travelled.**
 
 - **2026-07-23 — Generators / `yield` = pause-and-resume, the engine behind contract 2.** An
   algorithm's `run` will `yield` one `Step` at a time and *pause*, instead of building a full list
@@ -79,6 +87,143 @@ _(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood
   wiring, where the shared-instance argument will matter more concretely.
 
 ## Understood (apprehended, for reference)
+
+- **2026-07-26 — The mutable default argument trap (why `params=None` and not `params=RunParams()`).**
+  `def run(self, seed, target, params=None)` then `if params is None: params = RunParams()`. Looks
+  like a pointless extra line — it isn't. **A default argument's value is created ONCE, when the
+  `def` line runs, and every call that doesn't pass one shares that same object.** Write
+  `def run(..., params=RunParams())` and there is exactly one RunParams for the life of the program.
+  Frozen dataclasses make that survivable today; the classic disaster version is `def f(items=[])`,
+  where every call appends to the *same* list and results bleed between calls. The `None` sentinel is
+  the standard fix and worth doing reflexively, before anything mutable shows up. Same family of bug
+  as the `config.TOP_K` mutation problem — **one shared object where you meant one per run.**
+
+- **2026-07-26 — Writing to a frozen dataclass, legally: `object.__setattr__` in `__post_init__`.**
+  `RunParams` is `frozen=True`, so `params.top_k = 5` raises `FrozenInstanceError`. But it still
+  needs to clamp its own values on construction. `__post_init__` is a hook the dataclass calls at
+  the end of `__init__`, and inside it:
+  ```python
+  object.__setattr__(self, "top_k", _clamp(self.top_k, TOP_K_BOUNDS))
+  ```
+  This reaches past the frozen machinery to the raw attribute set. **Legitimate here specifically
+  because it runs during construction** — nobody can observe the unclamped value, so the object is
+  still immutable from every outside perspective. Anywhere else it would be defeating the point.
+  Why bother clamping at all when the server already returns 422 for out-of-range input: the 422
+  only protects *HTTP* callers. Any Python code could write `RunParams(top_k=999)` and blow past
+  decision C's locked ceiling. **An invariant enforced only by a docstring is not enforced** — the
+  lesson from the `from_` gap the day before, applied.
+
+- **2026-07-26 — Passing a *function* as an argument (`Callable`), and why it beat a flag.**
+  `LinkCache` now caches two things — outbound links and backlinks — which are the *same* lookup
+  (memory → disk → network) over different data. Three ways to avoid writing it twice:
+  (1) copy-paste, (2) `_lookup(title, direction="backward")` and branch inside on the flag,
+  (3) hand `_lookup` the fetch function itself. Took option 3:
+  ```python
+  return self._lookup(title, self._memory, self._data_dir, self._client.get_links)
+  #                                                        ^ no (), not being called here
+  ```
+  **The key idea: a function is a value.** `self._client.get_links` without parentheses doesn't call
+  anything — it hands over the function itself, to be called later inside `_lookup` as `fetch(title)`.
+  Same idea as decorators (`@lru_cache` receives the function below it) and as `key=lambda pair:
+  pair[1]` in greedy's `sorted` — I'd already used it twice without naming it. Why it beats the flag:
+  with a flag, `_lookup` has to *know* every direction that exists and grow an `if` per case; passing
+  the function in means `_lookup` never learns there are directions at all. `Callable[[str],
+  list[str]]` is the type annotation — "something callable that takes a str and returns a list of
+  str".
+
+- **2026-07-26 — A cache key must encode everything that changes the answer.**
+  Came up planning richer embeddings (title + summary instead of bare title). The plan looked
+  harmless until the cache key got checked: `EmbeddingCache._path_for` keys on **the title alone**,
+  and `data/embeddings/` already holds **9,616** bare-title vectors. Change what `embed(title)`
+  *means* without changing the key, and every one of those files silently becomes a wrong answer to
+  a question nobody re-asked — no error, no crash, just quietly worse results forever. **The rule:
+  if two different computations can produce different answers for the same key, the key is
+  incomplete.** The fix is a separate namespace (`title__rich.json`), not a smarter lookup. Same
+  trap avoided deliberately in `LinkCache`: links and backlinks are both "a list of titles related
+  to X", so they get separate *directories* — sharing one would return backlinks where links were
+  asked for, plausibly enough that nothing would ever look wrong.
+  - **Companion idea — don't mix representations inside one comparison.** Text length shifts a
+    sentence-transformer's output, so a "title + summary" vector and a bare-title vector aren't
+    directly comparable. Enriching *only the anchor* (the target) is safe because ranking cares
+    about relative order and a fixed anchor shifts every candidate equally; enriching *some*
+    candidates and not others would corrupt the ranking invisibly. Cost decides the split anyway:
+    ~500 candidates per expansion can't each afford a summary fetch, but one target can.
+
+- **2026-07-26 — Read the library's source before trusting its API.** `wikipediaapi` has a
+  `page.backlinks` property, which looked like exactly what bidirectional search needed. Reading
+  the source showed it paginates to exhaustion (`while "continue" in raw`, no cap — "Cat" is six
+  figures of backlinks) and rebuilds continuation requests from the *original* params, silently
+  dropping a `blnamespace=0` filter after the first page. Neither is in the docstring; both would
+  have shown up as "why is this hanging" and "why are there Category: pages in my results" much
+  later. **An attribute existing is not the same as it being usable at your scale** — and the two
+  failure modes here (unbounded work, silently dropped filter) are worth recognising generally.
+
+- **2026-07-26 — `asdict` = "turn a dataclass into a plain dict", and it goes all the way down.**
+  **Level 1:** `asdict(step)` turns `Step(nodes=[...], note='...')` into
+  `{'nodes': [...], 'note': '...'}`. **Level 2 — why I need it at all:** `json.dumps` only knows
+  dict/list/str/int/float/bool/None. Hand it a `Step` and it refuses outright —
+  `TypeError: Object of type Step is not JSON serializable`. It has no idea what a `Step` is;
+  `asdict` translates into vocabulary it speaks. That's the entire reason `app.py` says
+  `yield _sse("step", asdict(step))`. **Level 3 — the part that matters: it recurses.** My `Step`
+  isn't flat, it *contains* lists of other dataclasses (`Node`, `Edge`). `asdict` walks into those
+  lists and converts them too — proved it: `type(d["nodes"][0])` comes back `dict`, not `Node`.
+  Without recursion I'd get `{'nodes': [Node(...), Node(...)]}`, outer layer converted and inner
+  objects still unserializable, and I'd be hand-writing the walk. One call does the whole
+  translation from typed contract to browser-parseable JSON. **Level 4 — what it does NOT do:** it
+  only converts *dataclasses*; everything else passes through untouched. Demoed with numpy —
+  `asdict` handed back an `ndarray` and `json.dumps` still failed. Relevant here because embeddings
+  *are* numpy arrays; if a contract ever holds one directly, `asdict` won't save me (need
+  `.tolist()`, exactly what `EmbeddingCache` already does writing to disk). Contrast: `Grade`
+  serializes to a clean `"Best"` — but that's the `str` mixin on the enum doing the work, not
+  `asdict`, which merely passed the value along. **Level 5 — two gotchas:** it's a *deep copy*
+  (mutating the result never touches the original `Step`), and it's recursion so it costs — 41
+  objects walked per tick here (20 nodes + 20 edges + the Step), trivial now, worth remembering if
+  a Step ever carries thousands.
+  - **A real bug this surfaced:** `contracts.py` says `from_` "maps back to a plain `from` key" when
+    serialized. **It doesn't** — `asdict` copies field names literally, so the output is `"from_"`,
+    and nothing anywhere performs that rename. The docstring describes an intention that was never
+    implemented. Harmless today (step 5 only streams `Step`), real in step 8 when grades reach the
+    UI. Lesson worth more than the fact: **a docstring is not a test.** It asserted behaviour
+    confidently and was wrong for weeks; only running the code showed it.
+
+- **2026-07-26 — `@lru_cache(maxsize=N)` = "remember what you already worked out."**
+  **Level 1:** stick it above a function and the function's body runs *once* per distinct set of
+  arguments; every repeat call gets the remembered answer back without running anything. **Level 2 —
+  what it actually is:** a dict living beside the function, keyed by the arguments, holding the
+  return value. Call → look up the key → hit means skip the work entirely. Nothing cleverer than
+  that. **Level 3 — what `maxsize` means:** how many *argument combinations* to keep. Rolled my own
+  version with a printable notebook to see it: `maxsize=2`, then `square(3)` MISS, `square(4)` MISS,
+  `square(3)` HIT, `square(5)` MISS → notebook full → **evicts `square(4)`**, the one gone longest
+  without use. That's the whole of "LRU" = *least recently used* — the eviction rule, nothing more.
+  `.cache_info()` prints hits/misses/currsize for free. **Level 4 — why `maxsize=1` on
+  `_algorithm()`:** it takes **no arguments**, so there's only ever one possible key and one possible
+  answer. Size 1 isn't a tuning choice, it's the honest size. The effect is a **lazy singleton**:
+  first request builds `GreedyConnect(LinkCache(...), EmbeddingCache(...))`, every later request gets
+  the *same object* — verified with `x is y is z` → `True`. That sameness is the entire point; a new
+  `LinkCache` per request would mean an empty cache per request. **Level 5 — it's the same idea I
+  already wrote by hand**: `Embedder._get_model`'s `if self._model is None: ...` guard is memoization
+  spelled out longhand. `lru_cache` is that pattern as a decorator. Rule for choosing: hand-write the
+  guard when the thing lives on an instance (`self._model`), reach for `lru_cache` when it's a
+  module-level function.
+  - **Correction I needed:** I assumed `lru_cache` had something to do with `_stream` yielding. It
+    doesn't — **zero connection.** `lru_cache` is on `_algorithm()`, which returns an object and has
+    no `yield` in it. Caching is about *not repeating work*; `yield` is about *handing back results
+    one at a time*. They sit next to each other in `app.py` and are completely independent ideas.
+    (Genuine hazard for later: `@lru_cache` on a *generator* function is a trap — it caches the
+    generator object, and a generator can only be consumed once, so the second caller gets an
+    exhausted one. Not a problem here; would be if I ever decorated `run`.)
+
+- **2026-07-26 — One shared algorithm object is safe *because* its state lives in locals.**
+  Follows straight from the `lru_cache` entry: every request shares one `GreedyConnect` instance, so
+  why don't two browser tabs corrupt each other's search? Because `run` keeps `visited`, `current`,
+  `depth`, `node_count` as **local variables inside the function**, not as `self._visited` etc. Each
+  call to `run(...)` creates a fresh generator with its own private set of locals; two concurrent
+  runs are two separate frames that cannot see each other. Had greedy stashed `self.visited` instead,
+  tab B would wipe tab A's visited set mid-search. **The rule:** an object shared across requests may
+  hold *immutable/shared infrastructure* (the caches — sharing those is the whole point) but must not
+  hold *per-run mutable state*. Same principle as the config entry above (read-only globals are safe
+  to share; per-request-variable values must travel as arguments) — arrived at from the opposite
+  direction.
 
 - **2026-07-25 — SSE is a text format, not a library. Level 1: it's an HTTP response that never
   ends.** Normal request/response = browser asks, server answers once, connection closes. SSE = the
