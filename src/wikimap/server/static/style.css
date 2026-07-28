@@ -98,9 +98,12 @@ main {
   min-height: 0; /* lets the flex children scroll instead of overflowing the page */
 }
 
-/* position: relative so the settings panel can float over the canvas the way
-   Obsidian's does, instead of stealing horizontal space from the graph. */
-#graph { flex: 1; min-width: 0; position: relative; }
+/* #canvas is the positioned wrapper so the panel can float over the graph the way
+   Obsidian's does, instead of stealing horizontal space from it. The panel is a
+   SIBLING of #graph, never a child: vis-network deletes every child of the element
+   it is handed (Canvas._create), so nesting the panel there erases it. */
+#canvas { flex: 1; min-width: 0; position: relative; }
+#graph { position: absolute; inset: 0; }
 
 /* --- settings panel ------------------------------------------------------ */
 #panel {

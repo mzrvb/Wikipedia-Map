@@ -44,7 +44,12 @@ class GreedyConnect(ConnectAlgorithm):
         visited = {seed}
         current = seed
         depth = 0
-        node_count = 1  # the seed itself
+        # Every DISTINCT page ever emitted — not just the ones walked to. Two separate
+        # sets on purpose: `visited` is the path (where greedy has stood, which drives
+        # the loop guard), `seen` is the drawing (every node the frontend has been sent,
+        # which is what `max_nodes` caps). A running `+= len(top)` conflated them and
+        # re-counted pages that appeared in more than one fan-out.
+        seen = {seed}
 
         # Emit the seed first so it's born with real attributes. If we let the first
         # tick's edges create it implicitly, networkx would conjure it as a blank node
@@ -55,10 +60,10 @@ class GreedyConnect(ConnectAlgorithm):
         )
 
         while current != target:
-            if depth >= params.max_depth or node_count >= params.max_nodes:
+            if depth >= params.max_depth or len(seen) >= params.max_nodes:
                 yield Step(
                     note=f"stopped: hit cap at {current!r} "
-                    f"(depth {depth}, {node_count} nodes)"
+                    f"(depth {depth}, {len(seen)} nodes)"
                 )
                 return
 
@@ -71,6 +76,10 @@ class GreedyConnect(ConnectAlgorithm):
                 reverse=True,
             )
             top = scored[: params.top_k]
+            # Recorded here, next to the slice it counts, so it covers BOTH exits below
+            # (the dead-end yield and the normal one) — these nodes are emitted either
+            # way. A set, so a page appearing in two fan-outs still counts once.
+            seen.update(link for link, _ in top)
 
             nodes = [Node(id=link, score=score, depth=depth + 1) for link, score in top]
             edges = [Edge(source=current, target=link) for link, _ in top]
@@ -95,6 +104,5 @@ class GreedyConnect(ConnectAlgorithm):
             )
 
             visited.add(best)
-            node_count += len(top)
             current = best
             depth += 1

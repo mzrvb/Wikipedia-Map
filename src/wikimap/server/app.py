@@ -23,8 +23,8 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator
-from dataclasses import asdict #
-from functools import lru_cache # higher order functions
+from dataclasses import asdict
+from functools import lru_cache
 from pathlib import Path
 
 from fastapi import FastAPI, Query
@@ -88,10 +88,15 @@ def _sse(event: str, data: dict) -> str:
     That trailing "\\n\\n" is the whole protocol — omit it and the browser waits
     forever for a message it already has.
     """
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n" # blank link at the end marks msg completion for delivery
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def _stream(seed: str, target: str, params: RunParams, algorithm: str = DEFAULT_ALGORITHM) -> Iterator[str]: # draws the actual frames of the generator
+def _stream(
+    seed: str,
+    target: str,
+    params: RunParams,
+    algorithm: str = DEFAULT_ALGORITHM,
+) -> Iterator[str]:
     """Turn the algorithm's Step stream into SSE frames, one per tick.
 
     This is the generator chain that makes live drawing work: `run()` yields a Step,
@@ -185,7 +190,7 @@ def connect(
     out-of-range values get a 422 here, at the edge, so the algorithm never has to
     know that user input exists. The bounds themselves come from config, not literals.
     """
-    params = RunParams(
+    params = RunParams( # defined parameters
         top_k=top_k,
         max_depth=max_depth,
         max_nodes=max_nodes,

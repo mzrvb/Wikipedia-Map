@@ -74,11 +74,15 @@ class AStarConnect(ConnectAlgorithm):
                 seed,
             )
         ]
-        # Best known hop-count to each page. Doubles as "have we seen this at all".
+        # Best known hop-count to each page. Doubles as "have we seen this at all" —
+        # and therefore as the node counter. Every link in a `top` slice ends up a key
+        # here (either it was already known, which is why it got skipped, or it gets
+        # added below), so len() is exactly the number of DISTINCT nodes emitted. That
+        # is what `max_nodes` is meant to cap; a running `+= len(top)` would re-count
+        # pages that were merely re-encountered and trip the cap early.
         cost_from_seed = {seed: 0}
         came_from: dict[str, str] = {}
         expanded: set[str] = set()
-        node_count = 1
 
         # Seed first, so it's born with real attributes rather than being conjured
         # blank by an edge that arrives before it (nodes-before-edges, as in greedy).
@@ -111,10 +115,10 @@ class AStarConnect(ConnectAlgorithm):
                 # waiting, so skip this one and keep popping.
                 continue
 
-            if node_count >= params.max_nodes:
+            if len(cost_from_seed) >= params.max_nodes:
                 yield Step(
                     note=f"stopped: node cap at {current!r} "
-                    f"(depth {depth}, {node_count} nodes)"
+                    f"(depth {depth}, {len(cost_from_seed)} nodes)"
                 )
                 return
 
@@ -147,7 +151,6 @@ class AStarConnect(ConnectAlgorithm):
                 heapq.heappush(frontier, (f, next(tiebreak), link))
                 queued += 1
 
-            node_count += len(top)
             current_h = hops_remaining(self._embed_cache.similarity(current, target))
             yield Step(
                 nodes=[

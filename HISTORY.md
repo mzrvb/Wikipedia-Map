@@ -9,7 +9,145 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## Picking up where 2026-07-27 left off
+
+**State: everything green and working.** 80 fast tests pass, `ruff check` clean, no empty files.
+Run `uvicorn wikimap.server.app:app --reload` and open <http://127.0.0.1:8000>.
+
+**Uncommitted.** The display-panel work plus the 2026-07-27 review-fix pass (entry below) are still
+in the working tree. Reviewing `git diff` before committing is the working practice, and this diff
+is large.
+
+**One review finding deliberately deferred: cache writes are not atomic.**
+`LinkCache._lookup` does a bare `path.write_text(...)`. A crash or Ctrl-C mid-write leaves truncated
+JSON, and the read path has no validation — so `json.loads` will raise for that title on *every*
+subsequent run, permanently, curable only by deleting the file by hand. The fix is three lines
+(write to `.tmp`, then `Path.replace`, which is atomic). **Held at the user's direction until
+deployment**, since the failure needs a crash mid-crawl to trigger. Do not "helpfully" fix it early;
+do not forget it either.
+
+**Next task: `connect/bfs.py`.** Everything it needs already exists:
+
+- `LinkCache.get_backlinks` (built, tested, live-verified) is the backward half.
+- It must be **bidirectional** — unidirectional is 8,421 expansions for a 4-hop path versus 42.
+- It must **not** be cosine-capped. A cosine-capped BFS just reproduces greedy's bias and therefore
+  cannot answer "did greedy miss a shorter route", which is the only reason to build it.
+- Register it in `algorithms/connect/__init__.py`'s `ALGORITHMS` dict and it appears in the UI
+  automatically — the frontend picker is built from `/api/config`.
+
+**Two known gaps, deliberately open** (both have full entries below): `MoveEvaluation.from_` does not
+serialize as `from` despite its docstring saying so (fix in step 8), and this A* is not optimal
+because the cosine heuristic is inadmissible — it returned a 3-hop `Cat → Astronomy` when a 2-hop
+route existed.
+
+**One thing never verified:** the display panel's slider *ranges* and feel. The structure, wiring and
+persistence are proven, but nobody has actually dragged them — expect to retune min/max values.
+
+---
+
+## 2026-07-27
+
+### Review-fix pass: seven findings from a read of the vibe-coded session
+
+A full review of the three uncommitted commits' worth of work (backlinks, params, A*, panel). Seven
+of eight findings fixed; the eighth (atomic cache writes) deferred to deployment — see the header
+block above. Non-destructive as always: **no existing assertion changed**, +2 tests, 78 → 80.
+
+**1. Stale comments in `config.py`.** Two comments still described the per-run-params work as
+future ("a pre-run settings UI (post-MVP) will…", `# not yet wired`). It shipped in `ecb0a9a`. A doc
+that describes a *false* future is worse than a missing one — the next session reads "not yet wired"
+and rebuilds it. Rewritten to describe the mechanism that actually exists.
+
+**2. `TOP_K_BOUNDS` floor raised 0 → 1.** K=0 keeps no candidates, so every run dead-ends on tick
+one. The config comment had already flagged this and explicitly said to fix it "during the params
+work" — the params work shipped and it was missed. It mattered more than the note suggested, because
+those bounds are *published to the browser*: the UI was actively offering a value guaranteed to fail
+silently. Verified end to end: `top_k=0` → HTTP 422, `/api/config` publishes `[1, 20]`,
+`RunParams(top_k=0).top_k == 1`. Cost nothing in tests — every bounds assertion already read
+`config.TOP_K_BOUNDS[0]` symbolically rather than hardcoding `0`. That is the payoff for writing
+tests against the constant instead of the literal.
+
+**3. Cache directories anchored to the project root.** `Path("data/links")` is relative, so it
+resolved against the *launch* directory. Starting uvicorn from anywhere but the repo root would miss
+the 165-file warm cache, silently re-crawl from cold, and scatter a stray `data/` folder. A cache
+whose location depends on your shell's cwd is not a cache. Now `Path(__file__).resolve().parents[3]`.
+Correct for the editable install this project uses; flagged in-code to revisit if it is ever
+installed non-editably or containerised. No test churn — every cache test already passed
+`data_dir=tmp_path` explicitly.
+
+**4. The broad `except Exception` in `WikiClient` now logs before swallowing.** Both fetch methods
+catch everything and return `[]`. That is right for a timeout and wrong for our own bugs: an
+`AttributeError` from a typo was indistinguishable from "this page has no links", so a search would
+quietly find nothing with no trace. Kept broad (retry-on-anything is the intent) but added a
+`logger.warning(..., exc_info=True)`. **The general shape: a broad except is fine, a broad *silent*
+except is not.**
+
+**5. `max_nodes` now counts distinct pages, not sightings.** Both algorithms did
+`node_count += len(top)`, adding the whole slice each tick — so a page appearing in several fan-outs
+was counted several times. The cap tripped early and the figure in the Step note didn't match the
+circles on screen. A* needed no new state (`len(cost_from_seed)` is already exactly the distinct
+set, since every link in a `top` slice ends up a key); greedy gained a `seen` set kept deliberately
+separate from `visited` — **`visited` is the path, `seen` is the drawing, and conflating them is what
+caused the bug.**
+
+Pinned by two new tests, and — per the practice established by the vis-network fix — **both were run
+against the old counting first and confirmed to fail.** Writing them surfaced a genuine gotcha worth
+recording: the first attempt used `RunParams(max_nodes=5)`, which `__post_init__` silently *clamped*
+to the `MAX_NODES_BOUNDS` floor of 20, so the tests were quietly exercising the depth cap instead.
+The clamp working as designed made a test lie about what it covered. Both tests now use in-bounds
+values and set `max_depth=12` so only the node cap can trip.
+
+**6. Frontend: `replayBtn` no longer stubbed with `|| {}`.** Assigning `.disabled` to a bare object
+succeeds and does nothing, making a missing button undetectable — the opposite of the `bind()` helper
+three lines away. Now a real element-or-null behind `setReplayEnabled()`, which logs once like
+`bind()` does. The blast-radius protection from the vis-network fix is preserved; only the silence
+is gone.
+
+**7. Study-note comments removed from shipped source.** `# higher order functions`, `# wikipedia
+user shit`, a dangling bare `#`, and a mis-typed note about the SSE blank line that duplicated the
+docstring above it. Harmless individually; collectively they read as unfinished. `LEARN.md` is the
+designated home for that kind of note and the concepts behind them have been moved there.
+
+---
+
 ## 2026-07-26
+
+### Bug: vis-network deletes its container's children — the settings panel must be a SIBLING of #graph
+
+Shipped the display panel nested inside `#graph`. The page came up dead. Cause, read out of the
+vis-network bundle rather than guessed at — `Canvas._create()` opens with:
+
+```js
+for (; this.body.container.hasChildNodes(); )
+    this.body.container.removeChild(this.body.container.firstChild);
+```
+
+**vis-network wipes every child of the element it is handed.** So `#panel` was deleted the instant
+the Network was constructed, and the failure then cascaded in a way worth remembering:
+
+1. `querySelectorAll("[data-display]")` returned empty, so no display state existed.
+2. `getElementById("reset-display")` returned `null`, and `.addEventListener` on it threw.
+3. Module code runs top to bottom, so that **one** throw skipped every listener registered
+   afterwards — including the run-form submit handler. **The Run button stopped working because of
+   a bug in the settings panel.**
+
+Fixes, in order of importance:
+
+- **Structure.** `#canvas` (positioned) now wraps `#graph` and `#panel` as siblings; `#graph` is
+  absolutely positioned to fill it. Comments in both the HTML and CSS say why, since the nesting
+  looks perfectly reasonable.
+- **A regression test**, `test_settings_panel_is_not_inside_the_graph_container`, parsing the served
+  HTML and asserting `#graph` is not among `#panel`'s ancestors. Verified it actually fails on the
+  broken markup and passes on the fixed one — a check that cannot fail is decoration.
+- **Blast radius.** A `bind(id, event, handler)` helper logs a console error and returns instead of
+  throwing on a missing element; `initDisplayControls()` now runs *last*, after the run form is
+  wired; `applyDisplay()` no-ops when the panel is absent instead of writing `undefined` into every
+  physics option; node size falls back to 12.
+
+**The general lesson, recorded because it will recur:** a library handed a DOM container may *own*
+it. And in a script with no module boundaries, an exception isn't contained to the broken feature —
+it silently disables everything below it. Ordering listener registration by importance is cheap
+insurance.
 
 ### Graph display settings — and the line between server knobs and browser knobs
 

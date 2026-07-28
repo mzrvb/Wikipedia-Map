@@ -73,6 +73,48 @@ def test_index_is_served(client):
     assert "wikimap" in response.text
 
 
+def test_settings_panel_is_not_inside_the_graph_container(client):
+    """Regression: vis-network's Canvas._create() begins with
+
+        for (; container.hasChildNodes(); ) container.removeChild(firstChild)
+
+    so every child of #graph is deleted the instant the Network is constructed.
+    Nesting #panel there wiped the whole settings UI, and the resulting null
+    getElementById killed app.js before the Run button was ever wired up.
+
+    A browser-free structural check, because the failure is invisible server-side
+    and costs a manual reload to notice.
+    """
+    from html.parser import HTMLParser
+
+    class _Nesting(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack: list[str | None] = []
+            self.panel_ancestors: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            element_id = dict(attrs).get("id")
+            if element_id == "panel":
+                self.panel_ancestors = [a for a in self.stack if a]
+            # void elements never open a scope
+            if tag not in {"input", "br", "img", "meta", "link", "hr"}:
+                self.stack.append(element_id)
+
+        def handle_endtag(self, tag):
+            if self.stack:
+                self.stack.pop()
+
+    parser = _Nesting()
+    parser.feed(client.get("/").text)
+
+    assert parser.panel_ancestors, "#panel not found in index.html"
+    assert "graph" not in parser.panel_ancestors, (
+        f"#panel is nested inside #graph (ancestors: {parser.panel_ancestors}) — "
+        "vis-network will delete it on startup"
+    )
+
+
 def test_config_endpoint_reports_the_knobs(client):
     from wikimap import config
 

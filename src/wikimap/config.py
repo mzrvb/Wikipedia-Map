@@ -23,9 +23,10 @@ from dataclasses import dataclass
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # --- Algorithm / expansion knobs (step 4+) ------------------------------------
-# Read by the Connect algorithms; never hardcoded in them (contract 1). Plain
-# constants for now — a pre-run settings UI (post-MVP) will add per-knob bounds and
-# pass user-set values in per run rather than mutating these globals. See HISTORY.
+# Read by the Connect algorithms; never hardcoded in them (contract 1). These are the
+# DEFAULTS: each `*_BOUNDS` pair below is published by `/api/config`, enforced at the
+# HTTP edge by FastAPI's `ge`/`le`, and enforced again by `RunParams.__post_init__`.
+# Per-run values travel as a `RunParams` argument and never mutate these globals.
 
 # Branching cap: fetch every link, but only keep the top-K by cosine similarity to
 # the anchor. Uncapped expansion hits ~27M nodes by depth 3, so the cap itself is
@@ -34,11 +35,11 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 #
 # Resolved 2026-07-26: 20 is the MAXIMUM, not a fixed value. The settings UI may
 # vary K over the range below; it may never exceed 20. This is not a placeholder.
-# Caveat on the lower bound: K=0 keeps no candidates at all, so every Connect run
-# dead-ends on its first tick. Legal, useless — consider raising the floor to 1
-# when these become real constants during the params work.
+# Floor raised 0 -> 1 on 2026-07-27: K=0 keeps no candidates at all, so every run
+# dead-ends on its first tick. Since these bounds are served to the browser, a floor
+# of 0 meant the UI actively offered a value guaranteed to fail with no explanation.
 TOP_K = 20
-TOP_K_BOUNDS = (0, 20)  # (min, max) for the settings UI — not yet wired
+TOP_K_BOUNDS = (1, 20)
 
 # Hop limit: how many moves an algorithm may make before giving up. PLACEHOLDER —
 # real speedrun paths are usually 3-6 hops; tune once we watch real runs. Kept small

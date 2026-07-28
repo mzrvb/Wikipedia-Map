@@ -176,6 +176,37 @@ class TestCaps:
 
         assert "node cap" in steps[-1].note
 
+    def test_node_cap_counts_distinct_pages_not_repeat_sightings(self):
+        """Mirror of the greedy test — max_nodes counts circles on screen, not
+        sightings. Here the counter IS `len(cost_from_seed)`, whose keys are already
+        distinct titles, rather than a separate running total that could drift.
+
+        max_nodes=20 because RunParams clamps to MAX_NODES_BOUNDS' floor of 20;
+        max_depth=12 so the depth cap can't trip first and mask what's under test.
+        """
+        links = {
+            f"N{i}": [f"N{i + 1}", f"X{i}a", f"X{i}b", f"X{i}c", "Shared"]
+            for i in range(50)
+        }
+        scores = (
+            {f"N{i}": 0.9 for i in range(51)}
+            | {f"X{i}{s}": 0.5 for i in range(50) for s in "abc"}
+            | {"Shared": 0.1}
+        )
+
+        steps = _run(
+            links,
+            scores,
+            seed="N0",
+            target="T",
+            params=RunParams(max_nodes=20, max_depth=12),
+        )
+
+        assert "node cap" in steps[-1].note
+        emitted = {n.id for s in steps for n in s.nodes}
+        assert f"{len(emitted)} nodes" in steps[-1].note
+        assert sum("Shared" in {n.id for n in s.nodes} for s in steps) > 1
+
 
 class TestStepShape:
     def test_yields_wellformed_steps(self):

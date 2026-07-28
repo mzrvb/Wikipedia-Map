@@ -31,6 +31,20 @@ const network = new vis.Network(
   }
 );
 
+// Binding helper. A plain `getElementById(...).addEventListener(...)` throws on a
+// missing element, and because module code runs top to bottom that ONE throw kills
+// every listener registered after it — which is how a wiped settings panel silently
+// disabled the Run button. Loud in the console, but never fatal.
+function bind(id, event, handler) {
+  const el = document.getElementById(id);
+  if (!el) {
+    console.error(`wikimap: no element #${id} — control disabled`);
+    return null;
+  }
+  el.addEventListener(event, handler);
+  return el;
+}
+
 // --- log -------------------------------------------------------------------
 const logEl = document.getElementById("log");
 
@@ -57,7 +71,9 @@ function applyStep(step, seed, target) {
       label: node.id,
       title: node.score == null ? node.id : `${node.id} — score ${node.score.toFixed(3)}`,
       color: isSeed ? "#4ade80" : isTarget ? "#f472b6" : nodeColor(node),
-      size: isSeed || isTarget ? display.nodeSize * 1.6 : display.nodeSize,
+      // ?? 12 so the graph still draws even if the display panel failed to load —
+      // a broken settings UI must not take the actual product down with it.
+      size: (isSeed || isTarget ? 1.6 : 1) * (display.nodeSize ?? 12),
       // Kept on the node so a later "colour by" change can recolour without
       // re-running the search. vis-network ignores fields it doesn't recognise,
       // which is what makes a DataSet item a fine place to park real data.
@@ -120,6 +136,9 @@ function readDisplay() {
 
 function applyDisplay() {
   readDisplay();
+  // Nothing to apply — the panel is missing. Leave the network on its constructor
+  // defaults rather than writing `undefined` into every physics option.
+  if (!displayInputs.length) return;
 
   network.setOptions({
     nodes: { size: display.nodeSize },
@@ -158,6 +177,7 @@ function applyDisplay() {
 // level and drops the font to 0 below the threshold. Cheaper than rewriting every
 // node's label, because it's one global option rather than N DataSet updates.
 function applyLabelFade() {
+  if (display.labelZoom == null) return;
   const visible = network.getScale() >= display.labelZoom;
   network.setOptions({ nodes: { font: { size: visible ? 13 : 0 } } });
 }
@@ -180,20 +200,27 @@ function loadDisplay() {
   applyDisplay();
 }
 
-for (const el of displayInputs) el.addEventListener("input", applyDisplay);
+// Called from the init block at the bottom of this file, deliberately AFTER the run
+// form is wired. Order matters: the search UI is the product, the settings panel is
+// a convenience, so the product gets its listeners first.
+function initDisplayControls() {
+  for (const el of displayInputs) el.addEventListener("input", applyDisplay);
 
-document.getElementById("reset-display").addEventListener("click", () => {
-  for (const el of displayInputs) {
-    const value = displayDefaults[el.id.slice(2)];
-    if (el.type === "checkbox") el.checked = value;
-    else el.value = value;
-  }
-  applyDisplay();
-});
+  bind("reset-display", "click", () => {
+    for (const el of displayInputs) {
+      const value = displayDefaults[el.id.slice(2)];
+      if (el.type === "checkbox") el.checked = value;
+      else el.value = value;
+    }
+    applyDisplay();
+  });
 
-document.getElementById("toggle-panel").addEventListener("click", () => {
-  document.getElementById("panel").classList.toggle("hidden");
-});
+  bind("toggle-panel", "click", () => {
+    document.getElementById("panel")?.classList.toggle("hidden");
+  });
+
+  loadDisplay();
+}
 
 // --- SSE -------------------------------------------------------------------
 let source = null;
@@ -206,7 +233,18 @@ let lastRun = null;
 const form = document.getElementById("run-form");
 const runBtn = document.getElementById("run");
 const stopBtn = document.getElementById("stop");
+// Lives in the settings panel, so unlike the buttons above it may legitimately be
+// absent — and a missing one must not throw and kill the run handler. Kept as a real
+// element-or-null and funnelled through setReplayEnabled(), rather than stubbed with
+// `|| {}`: assigning .disabled to a bare object silently succeeds and does nothing,
+// so a missing button would be undetectable. This matches what bind() does — say so
+// once, in the console, then carry on.
 const replayBtn = document.getElementById("replay");
+if (!replayBtn) console.error("wikimap: no element #replay — replay disabled");
+
+function setReplayEnabled(enabled) {
+  if (replayBtn) replayBtn.disabled = !enabled;
+}
 
 function stop() {
   if (source) {
@@ -225,7 +263,7 @@ form.addEventListener("submit", (event) => {
   edges.clear();
   logEl.replaceChildren();
   recorded = [];
-  replayBtn.disabled = true;
+  setReplayEnabled(false);
 
   const seed = document.getElementById("seed").value.trim();
   const target = document.getElementById("target").value.trim();
@@ -257,7 +295,7 @@ form.addEventListener("submit", (event) => {
   source.addEventListener("error", (e) => log(JSON.parse(e.data).message, "failure"));
   source.addEventListener("done", () => {
     log("done", "status");
-    replayBtn.disabled = recorded.length === 0;
+    setReplayEnabled(recorded.length > 0);
     stop();
   });
 
@@ -273,7 +311,7 @@ form.addEventListener("submit", (event) => {
   };
 });
 
-stopBtn.addEventListener("click", () => {
+bind("stop", "click", () => {
   stop();
   log("stopped", "status");
 });
@@ -281,19 +319,19 @@ stopBtn.addEventListener("click", () => {
 // Replay the recorded Steps on a timer. Obsidian has to synthesise an animation;
 // ours is the real build order, because the algorithm genuinely emitted it one
 // tick at a time (contract 2).
-replayBtn.addEventListener("click", () => {
+bind("replay", "click", () => {
   if (!recorded.length || !lastRun) return;
   const steps = recorded;
   nodes.clear();
   edges.clear();
   logEl.replaceChildren();
-  replayBtn.disabled = true;
+  setReplayEnabled(false);
 
   let i = 0;
   const timer = setInterval(() => {
     if (i >= steps.length) {
       clearInterval(timer);
-      replayBtn.disabled = false;
+      setReplayEnabled(true);
       log("replay done", "status");
       return;
     }
@@ -370,4 +408,7 @@ fetch("/api/config")
   })
   .catch(() => {});
 
-loadDisplay();
+// --- init ------------------------------------------------------------------
+// Last, on purpose: everything above has already registered its listeners, so a
+// fault in the settings panel can no longer stop the search UI from working.
+initDisplayControls();

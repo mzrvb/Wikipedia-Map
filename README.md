@@ -14,7 +14,7 @@ Both modes build the graph live on screen as the search runs.
 
 **Working MVP with live settings and two algorithms.** Roadmap steps 1–6 done, plus Connect's A* —
 run a search in the browser, watch the graph build live, switch algorithms, tune the search knobs,
-and reshape the rendering (node size, forces, colour-by) from a settings panel. 77 fast tests green,
+and reshape the rendering (node size, forces, colour-by) from a settings panel. 80 fast tests green,
 `ruff check` clean.
 
 Settings come in two kinds, and the split is deliberate:

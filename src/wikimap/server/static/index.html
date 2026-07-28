@@ -52,7 +52,13 @@
     </form>
 
     <main>
-      <div id="graph">
+      <!-- #canvas is the positioned wrapper; #graph and #panel are SIBLINGS.
+           They must never be nested: vis-network's Canvas._create() begins with
+             for (; container.hasChildNodes(); ) container.removeChild(firstChild)
+           so anything inside #graph is deleted the moment the Network is built.
+           Putting the panel in there once already wiped it and killed app.js. -->
+      <div id="canvas">
+        <div id="graph"></div>
         <div id="panel">
           <details open>
             <summary>Search</summary>

@@ -9,6 +9,7 @@ for why the library's version is unusable here. Both still live in this one clas
 so the rule "nothing else talks to Wikipedia directly" is intact.
 """
 
+import logging
 import os
 import time
 
@@ -19,6 +20,8 @@ from dotenv import load_dotenv
 from wikimap.config import BACKLINK_LIMIT
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # Per-request page cap the MediaWiki API enforces on list=backlinks.
 _API_MAX_PER_REQUEST = 500
@@ -36,11 +39,10 @@ class WikiClient:
                 "USER_AGENT is not set. Copy .env.example to .env and fill it in — "
                 "Wikimedia throttles or blocks generic user agents at volume."
             )
-        
-        # it works if it gets here
-        self._wiki = wikipediaapi.Wikipedia(user_agent=user_agent, language=language) # wikipedia user shit
-        self._retries = retries # set retries
-        self._delay = delay # set delay
+
+        self._wiki = wikipediaapi.Wikipedia(user_agent=user_agent, language=language)
+        self._retries = retries
+        self._delay = delay
         # Kept for the raw backlinks query below, which doesn't go through wikipediaapi
         # and so has to set its own headers.
         self._user_agent = user_agent
@@ -57,13 +59,27 @@ class WikiClient:
         `if ':' not in title` check, which silently dropped real articles whose
         titles happen to contain a colon (e.g. "Aliens: The Ride").
 
-        Retries on transient API failures; returns [] once retries are exhausted.
+        Retries on transient API failures; returns [] once retries are exhausted —
+        but LOGS first. See the note on the except block below.
         """
         for attempt in range(1, self._retries + 1):
             try:
                 page = self._wiki.page(title)
                 return [t for t, p in page.links.items() if p.ns == 0]
             except Exception:
+                # Deliberately broad (a timeout, a 429, a malformed payload all mean
+                # "retry"), which also means it catches OUR bugs — an AttributeError
+                # from a typo would be swallowed and returned as []. And [] is
+                # indistinguishable from "this page genuinely has no links", so the
+                # search would just quietly find nothing. The log is what keeps a
+                # programming error from masquerading as a data answer.
+                logger.warning(
+                    "get_links(%r) attempt %d/%d failed",
+                    title,
+                    attempt,
+                    self._retries,
+                    exc_info=True,
+                )
                 if attempt == self._retries:
                     return []
                 time.sleep(self._delay)
@@ -130,6 +146,15 @@ class WikiClient:
                     params = dict(base_params, blcontinue=token)
                 return titles[:limit]
             except Exception:
+                # Same reasoning as get_links: broad on purpose, logged so our own
+                # bugs can't hide inside an empty result.
+                logger.warning(
+                    "get_backlinks(%r) attempt %d/%d failed",
+                    title,
+                    attempt,
+                    self._retries,
+                    exc_info=True,
+                )
                 if attempt == self._retries:
                     return []
                 time.sleep(self._delay)

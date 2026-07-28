@@ -18,8 +18,19 @@ from urllib.parse import quote
 
 from wikimap.wiki.client import WikiClient
 
-DEFAULT_DATA_DIR = Path("data/links")
-DEFAULT_BACKLINK_DIR = Path("data/backlinks")
+# Anchored to the project root, NOT left as a relative path. `Path("data/links")`
+# resolves against whatever directory the process happened to be launched from, so
+# starting uvicorn from anywhere but the repo root would silently miss the warm cache,
+# re-crawl every page from cold, and scatter a stray `data/` folder wherever you stood.
+# A cache whose location depends on your shell's cwd is not a cache.
+#
+# parents[] walks up from this file: [0] wiki/ -> [1] wikimap/ -> [2] src/ -> [3] root.
+# Correct for the editable install this project uses (`pip install -e .`), where the
+# source tree IS the installed package. Revisit if it is ever installed non-editably
+# or containerised — at that point this should become an env var / settings value.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_DATA_DIR = _PROJECT_ROOT / "data" / "links"
+DEFAULT_BACKLINK_DIR = _PROJECT_ROOT / "data" / "backlinks"
 
 
 class LinkCache:

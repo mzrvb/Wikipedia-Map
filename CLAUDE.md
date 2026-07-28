@@ -34,20 +34,23 @@ is `apply(step)`. 21 fast tests green (7 new in `test_graph.py`), `ruff check` c
 similarity to the target (decision C), capped to TOP_K, with a genuine `visited` check (the predecessor's
 dead loop guard, not ported). 30 fast tests green (9 new in `test_greedy.py`), `ruff check` clean. No new deps.
 
-**Graph display settings — done.** A floating panel over the canvas with three sections: Search
+**Graph display settings — done.** ⚠️ `#panel` must stay a **sibling** of `#graph` (both inside
+`#canvas`), never a child: vis-network's `Canvas._create()` deletes every child of the container it
+is given, which wiped the panel and — via a `null.addEventListener` throw — silently disabled the Run
+button too. Pinned by `test_settings_panel_is_not_inside_the_graph_container`.
+A floating panel over the canvas with three sections: Search
 (server-owned, from `/api/config`), Display, and Forces (both browser-owned, persisted in
 `localStorage`). Display controls are read generically — every one carries `data-display` and an id of
 `d-<key>`, so adding a control means adding HTML and nothing else. Nodes carry `score`/`depth` as
 DataSet fields so "colour by" can recolour without re-searching, and Replay re-applies the recorded
-Step stream on a timer. **No server changes** — the 77 tests were untouched.
+Step stream on a timer. The only server-side addition was the structural regression test above.
 
 **`connect/astar.py` — done.** Weighted A*: `f = g + W * h` with `h = hop_scale * (1 - cosine)`, a
 `heapq` frontier, and `came_from` path reconstruction. The rescale is load-bearing — `g` counts hops,
 so raw cosine added to it can never outweigh one hop and A* would silently degrade to BFS. `W` spans
 the spectrum (0 = breadth-first ordering, large = greedy), live-confirmed. A registry in
 `algorithms/connect/__init__.py` holds `{greedy, astar}`; `/api/connect?algorithm=` selects, and
-`_caches()` is split from `_algorithm()` so both algorithms share one warm cache. 77 fast tests green
-(18 new), `ruff check` clean. **Live: A* solved `Cat → Astronomy` in 3 hops where greedy took 4** —
+`_caches()` is split from `_algorithm()` so both algorithms share one warm cache. `ruff check` clean. **Live: A* solved `Cat → Astronomy` in 3 hops where greedy took 4** —
 but it is NOT optimal (a 2-hop route existed; cosine `h` is inadmissible). See HISTORY; do not let a
 future docstring claim the textbook guarantee.
 
@@ -106,8 +109,19 @@ violated in reverse. Rule: *changes the SEARCH → `config.py`; changes the PICT
 **Every step must be non-destructive:** existing tests stay green without being edited, new
 parameters arrive with defaults, `/api/config` only gains fields, existing URLs keep working.
 (Held so far. Backlinks: +6 tests, none edited. Params: +15 tests, two test *doubles* gained
-`params=None`. A*: +18 tests, two doubles gained `lambda *_:`. No assertion has ever changed.
-77 fast tests green.)
+`params=None`. A*: +18 tests, two doubles gained `lambda *_:`. 2026-07-27 review pass: +2 tests,
+none edited — raising `TOP_K_BOUNDS`' floor cost nothing because every bounds assertion reads
+`config.TOP_K_BOUNDS[0]` rather than the literal. No assertion has ever changed. 80 fast tests green.)
+
+**Review pass 2026-07-27 — seven fixes, one deferred.** Stale `config.py` comments corrected;
+`TOP_K_BOUNDS` floor 0 → 1 (K=0 dead-ends every run, and the bounds are served to the browser);
+cache dirs anchored to the project root instead of the cwd; `WikiClient`'s broad `except` now logs
+before swallowing; `max_nodes` counts **distinct** pages rather than re-counting repeat sightings
+(greedy gained a `seen` set kept separate from `visited` — *path* vs *drawing*; A* uses
+`len(cost_from_seed)`, which already held the truth); frontend `replayBtn` no longer stubbed with
+`|| {}`. ⚠️ **Deferred by the user until deployment: `LinkCache._lookup`'s write is not atomic** — a
+crash mid-write leaves truncated JSON that permanently breaks that title on every later run. Fix is
+`.tmp` + `Path.replace`. See HISTORY. Do not fix early; do not lose track of it.
 
 **No shared base above Connect and Explore yet.** A parent `Algorithm` class holding `__init__` and
 an anchor-parameterised ranking helper was proposed and deliberately deferred until Connect is

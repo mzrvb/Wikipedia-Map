@@ -95,6 +95,86 @@ _(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood
 
 ## Understood (apprehended, for reference)
 
+- **2026-07-27 — A broad `except` is fine; a broad *silent* except is not.**
+  `WikiClient.get_links` wraps its fetch in `except Exception: return []`. Catching everything is
+  correct here — a timeout, a 429 and a malformed payload all mean "retry". The problem is what else
+  it catches: **your own bugs.** A typo raising `AttributeError` gets swallowed and returned as `[]`,
+  and `[]` is indistinguishable from "this page genuinely has no links". The search then finds
+  nothing, and there is no trace of why. Fix wasn't to narrow the catch (the breadth is deliberate)
+  but to make it speak: `logger.warning(..., exc_info=True)` before giving up. **Rule: if you swallow
+  an exception, leave a receipt.**
+
+- **2026-07-27 — A relative path is resolved against where you *launched*, not where the file lives.**
+  `Path("data/links")` looked like "the data folder in this project". It isn't — it means "a folder
+  called data/links, starting from whatever directory the process was started in". Launch uvicorn
+  from the Desktop and the app cheerfully creates a brand-new empty cache there and re-crawls
+  Wikipedia from cold, while the real 165-file cache sits untouched. Nothing errors; it just looks
+  inexplicably slow. Fix: anchor to the file itself with `Path(__file__).resolve().parents[3]`.
+  **`__file__` is where the code is; the cwd is where the human was standing. For anything the
+  program owns — caches, data, bundled assets — you want the former.**
+
+- **2026-07-27 — Count the things, not the sightings.** `max_nodes` is meant to cap how many circles
+  land on the canvas. Both algorithms implemented it as `node_count += len(top)` — add the batch size
+  each tick. But a page linked from many others appears in many batches, so it got counted many
+  times: cap trips early, reported number disagrees with the screen. The fix in greedy is the part
+  worth keeping: it now holds **two** sets that are easy to mistake for one.
+  - `visited` — pages greedy has *stood on*. Drives the loop guard. One per hop.
+  - `seen` — pages that have been *drawn*. Drives `max_nodes`. Twenty-odd per hop.
+
+  They answer different questions, and merging them is precisely what caused the bug. A* needed no
+  new state at all, because `len(cost_from_seed)` was already exactly the right number — **when a
+  count is drifting from reality, look for an existing collection that already holds the truth
+  before adding a counter to maintain by hand.**
+
+- **2026-07-27 — A clamp can make a test lie about what it tests.** Writing the test for the above,
+  the first attempt passed `RunParams(max_nodes=5)`. It went green. It was also testing nothing:
+  `__post_init__` *clamps* to `MAX_NODES_BOUNDS`, whose floor is 20, so `5` silently became `20` and
+  the run hit the **depth** cap instead — a different code path entirely. The safety feature worked
+  exactly as designed and quietly invalidated the test. Two things to carry:
+  - **Clamping and validating fail differently.** A validator rejects `5` and you find out
+    immediately. A clamp accepts it, changes it, and says nothing. Both are legitimate — this project
+    uses a validator at the HTTP edge and a clamp internally, on purpose — but when writing a test
+    against clamped input, **check your value is actually in bounds** or you're testing a value you
+    never chose.
+  - The tell was that the test passed on the *first* try against code I'd just changed. That deserved
+    suspicion, not relief.
+
+- **2026-07-27 — Prove the test fails, every time, not just when it's convenient.** Both new
+  node-count tests were run against the *old* counting logic first and confirmed to fail, then run
+  against the fix and confirmed to pass. This is the same habit the vis-network fix established, and
+  it is what caught the clamp problem above — the first version of the test passed against the broken
+  code too, which is the definition of a test that isn't testing anything.
+
+- **2026-07-26 — One throw in a `<script>` kills every listener below it.** The settings panel broke
+  and took the **Run button** down with it, which made no sense until the order was clear. The chain:
+  vis-network deleted `#panel` → `getElementById("reset-display")` returned `null` →
+  `null.addEventListener(...)` threw → **and module code runs top to bottom, so everything after that
+  line never executed** — including `form.addEventListener("submit", ...)` much further down. Two
+  things to keep:
+  - **A browser script has no error containment.** Unlike Python, where an exception at import time
+    is loud and total, a JS `<script>` dies quietly at the failing line and the page *looks* fine.
+    Nothing visibly broke; things just didn't respond.
+  - **So register listeners in order of importance,** and make optional lookups non-fatal. The fix
+    was a `bind(id, event, handler)` helper that logs an error and returns when the element is
+    missing, plus moving all settings-panel wiring to the very bottom of the file. The product's
+    listeners get attached before anything that might fail.
+
+- **2026-07-26 — A library handed a DOM element may OWN it.** `new vis.Network(container, ...)`
+  doesn't just draw into `#graph` — reading the bundle, `Canvas._create()` starts with
+  `for (; container.hasChildNodes(); ) container.removeChild(container.firstChild)`. It **empties the
+  container first.** So putting the settings panel inside `#graph` — which looked completely
+  reasonable — deleted the panel on page load. Fix: `#panel` is a *sibling* of `#graph`, both inside
+  a positioned `#canvas` wrapper, so it can still float over the graph. **Question to ask before
+  putting anything inside an element you've handed to a library: does this library consider the
+  container its own?** Related habit that paid off: I found the answer by *downloading the library
+  and grepping it*, not by guessing — the behaviour is real and documented nowhere obvious.
+
+- **2026-07-26 — A test that cannot fail is decoration.** After fixing the above I wrote a regression
+  test asserting `#panel` isn't nested inside `#graph`. Then I ran the check against the *broken*
+  markup to confirm it actually reported a failure, and against the fixed markup to confirm it
+  didn't. Worth doing every time a test is written for a bug that already happened: **prove the test
+  would have caught it.** Otherwise you've added confidence without adding coverage.
+
 - **2026-07-26 — "Config owns every knob" has a boundary: search knobs vs display knobs.**
   Adding the Obsidian-style graph panel raised a question contract 1 seemed to have already answered:
   do node size and physics forces belong in `config.py` like `TOP_K` does? **No** — and working out
