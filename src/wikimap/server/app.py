@@ -26,15 +26,21 @@ from collections.abc import Iterator
 from dataclasses import asdict
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from wikimap import config
 from wikimap.algorithms.base import ConnectAlgorithm
 from wikimap.algorithms.connect import ALGORITHMS, DEFAULT_ALGORITHM
 from wikimap.config import RunParams
+
+if TYPE_CHECKING:
+    # Type-only, same reasoning as algorithms/base.py: _wiki_client() imports
+    # WikiClient at call time so importing this module never drags in wikipediaapi.
+    from wikimap.wiki.client import WikiClient
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +67,22 @@ def _caches():
     from wikimap.wiki.client import WikiClient
 
     return LinkCache(WikiClient()), EmbeddingCache(Embedder())
+
+
+@lru_cache(maxsize=1)
+def _wiki_client() -> WikiClient:
+    """The one WikiClient the page-detail endpoint needs, built lazily.
+
+    Deliberately separate from `_caches()`: that function's LinkCache holds a
+    WikiClient for the SEARCH path as a private implementation detail, and reaching
+    into it would couple this unrelated endpoint to another class's internals to
+    save nothing — WikiClient itself does no caching (LinkCache is the cache), so a
+    second instance costs nothing beyond re-reading USER_AGENT. Page detail is a
+    rare, user-triggered lookup, not something worth wiring through the disk cache.
+    """
+    from wikimap.wiki.client import WikiClient
+
+    return WikiClient()
 
 
 @lru_cache(maxsize=None)
@@ -208,6 +230,24 @@ def connect(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/api/page")
+def page_detail(title: str = Query(min_length=1, max_length=200)) -> dict:
+    """One page's real Wikipedia summary + URL, fetched on demand when a node in the
+    graph is clicked. Plain JSON, not SSE — a single synchronous lookup, not a stream.
+
+    A query param, not a `/api/page/{title}` path param: Wikipedia titles can contain
+    "/" (e.g. "AC/DC"), which a path segment can't carry safely. `seed`/`target` on
+    `/api/connect` already dodge this exact problem the same way.
+    """
+    result = _wiki_client().get_summary(title)
+    if result is None:
+        return JSONResponse(
+            status_code=404,
+            content={"message": f"No Wikipedia summary found for {title!r}"},
+        )
+    return {"title": title, "summary": result["summary"], "url": result["url"]}
 
 
 # Mounted LAST and at "/" so it acts as the fallback: the /api routes above are

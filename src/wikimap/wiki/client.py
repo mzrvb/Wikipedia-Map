@@ -85,6 +85,35 @@ class WikiClient:
                 time.sleep(self._delay)
         return []
 
+    def get_summary(self, title: str) -> dict | None:
+        """Return {"summary": ..., "url": ...} for `title`, or None if it doesn't exist
+        or every retry failed — the same collapsed-together contract as get_links'
+        [] (see its docstring): a real bug and "not found" both come back falsy, and
+        the log is what tells them apart.
+
+        One page object (self._wiki.page(title)), read once — .summary and .fullurl
+        are both attributes of it, so there's no reason to fetch the page twice.
+        """
+        for attempt in range(1, self._retries + 1):
+            try:
+                page = self._wiki.page(title)
+                summary = page.summary
+                if not page.exists():
+                    return None
+                return {"summary": summary, "url": page.fullurl}
+            except Exception:
+                logger.warning(
+                    "get_summary(%r) attempt %d/%d failed",
+                    title,
+                    attempt,
+                    self._retries,
+                    exc_info=True,
+                )
+                if attempt == self._retries:
+                    return None
+                time.sleep(self._delay)
+        return None
+
     def get_backlinks(self, title: str, limit: int = BACKLINK_LIMIT) -> list[str]:
         """Return pages that link TO `title` (ns0 only), capped at `limit`.
 

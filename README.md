@@ -14,8 +14,9 @@ Both modes build the graph live on screen as the search runs.
 
 **Working MVP with live settings and two algorithms.** Roadmap steps 1–6 done, plus Connect's A* —
 run a search in the browser, watch the graph build live, switch algorithms, tune the search knobs,
-and reshape the rendering (node size, forces, colour-by) from a settings panel. 80 fast tests green,
-`ruff check` clean.
+and reshape the rendering (node size, forces, colour-by) from a settings panel. Click any node
+(mid-run or after) to open a panel with its real Wikipedia summary and a link to the article. 90
+fast tests green, `ruff check` clean.
 
 Settings come in two kinds, and the split is deliberate:
 
@@ -109,6 +110,7 @@ uvicorn wikimap.server.app:app --reload
 | `GET /api/connect?…&algorithm=greedy\|astar` | Which Connect algorithm to run (default `greedy`) |
 | `GET /api/connect?…&top_k=&max_depth=&max_nodes=&heuristic_weight=&hop_scale=` | Per-run knobs. All optional; out-of-range values give a 422 |
 | `GET /api/config` | The knobs *and their bounds*, read-only (contract 1: the frontend never hardcodes them) |
+| `GET /api/page?title=` | One page's real Wikipedia summary + URL, fetched on demand when a node is clicked |
 
 Settings are per request, not global state — two browser tabs can run different `top_k` values
 without interfering. `top_k` is capped at 20 (locked decision C: uncapped expansion reaches ~27M

@@ -203,6 +203,54 @@ main {
 #panel button:hover:not(:disabled) { border-color: var(--accent); }
 #panel button:disabled { opacity: 0.4; cursor: default; }
 
+/* --- node detail panel ----------------------------------------------------
+   Left side (settings panel owns the right), so the two floating panels don't
+   collide at typical widths. On narrow viewports they can still overlap — an
+   accepted MVP gap, not fixed here. */
+#node-panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 2;
+  width: 300px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 14px 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+#node-panel.hidden { display: none; }
+
+.node-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+#node-panel-title { font-size: 14px; word-break: break-word; }
+#node-panel-close {
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+#node-panel-close:hover { color: var(--text); }
+
+#node-panel .hint { margin: 4px 0 8px; }
+#node-panel-summary { margin: 0 0 10px; font-size: 13px; line-height: 1.5; }
+#node-panel-link {
+  display: inline-block;
+  color: var(--accent);
+  font-size: 12px;
+  text-decoration: none;
+}
+#node-panel-link:hover { text-decoration: underline; }
+
 /* --- run log ------------------------------------------------------------- */
 #log {
   width: 340px;
@@ -227,4 +275,5 @@ main {
   main { flex-direction: column; }
   #log { width: auto; height: 200px; border-left: 0; border-top: 1px solid var(--line); }
   #panel { width: 210px; }
+  #node-panel { width: 220px; }
 }

@@ -9,14 +9,16 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
-## Picking up where 2026-07-27 left off
+## Picking up where 2026-07-28 left off
 
-**State: everything green and working.** 80 fast tests pass, `ruff check` clean, no empty files.
+**State: everything green and working.** 90 fast tests pass, `ruff check` clean, no empty files.
 Run `uvicorn wikimap.server.app:app --reload` and open <http://127.0.0.1:8000>.
 
-**Uncommitted.** The display-panel work plus the 2026-07-27 review-fix pass (entry below) are still
-in the working tree. Reviewing `git diff` before committing is the working practice, and this diff
-is large.
+**The node-click detail panel (entry below) is proven at the API level but not yet clicked in a
+real browser** — it was built in a background session with no browser attached. Backend verified
+directly (`curl "/api/page?title=Cat"` returns a real summary; a nonexistent title 404s), and the
+structural/unit tests are green, but nobody has actually opened the page and clicked a node yet.
+Do that before treating the feature as fully proven.
 
 **One review finding deliberately deferred: cache writes are not atomic.**
 `LinkCache._lookup` does a bare `path.write_text(...)`. A crash or Ctrl-C mid-write leaves truncated
@@ -42,6 +44,70 @@ route existed.
 
 **One thing never verified:** the display panel's slider *ranges* and feel. The structure, wiring and
 persistence are proven, but nobody has actually dragged them — expect to retune min/max values.
+
+---
+
+## 2026-07-28
+
+### Node-click detail panel: on-demand page lookup, not a Step-contract addition
+
+Clicking any node (mid-run or after, any node, not just the winning path) now opens a panel with
+title, score, depth, the page's real Wikipedia summary, and a link to the article. The interesting
+decision wasn't the UI — it was **where the summary data comes from**, and the answer is
+deliberately not "add it to `Node`."
+
+**Why the summary isn't riding along in the Step stream.** `Node` (`graph/contracts.py`) stays
+`id`/`score`/`depth`. Fetching a summary costs an `extracts` API call per page — paying that for
+every node in every fan-out (up to `top_k` per tick) would multiply the already-expensive part of
+a cold run (embedding ~300 links per page) by a second network round-trip nobody asked for, for
+data most nodes will never have their panel opened. Fetching on click, once, only for the page the
+user actually cares about, is the same "pay for what you use" shape as the cache layer already
+uses. `GET /api/page?title=` is a new, independent lookup — the Step/Node contract is untouched,
+and old clients of that contract (both algorithms, both sets of tests) needed zero changes.
+
+**`WikiClient.get_summary` reads `.summary` and `.fullurl` off ONE `wikipediaapi` page object** —
+the same object `get_links`/`exists` already construct via `self._wiki.page(title)`. Reading two
+different attribute groups off one page object costs exactly two API calls (`extracts` for
+`.summary`, `info` for `.fullurl`), not four, because `wikipediaapi` fetches attributes lazily in
+groups keyed by which raw MediaWiki action produces them — fetching the same group twice is free
+(cached on the page object), fetching two different groups once each is the two-call floor. Getting
+this to sit right needed one non-obvious ordering: read `.summary` before checking `.exists()`,
+because a page that raised no exception on `.summary` but reports `exists() == False` is exactly
+the "genuinely no such page" case `get_links` already treats identically to a network failure
+(both come back as one falsy result — `[]` there, `None` here — see that method's own docstring on
+why it's deliberately not distinguished).
+
+**Query param, not `/api/page/{title}` path param.** Wikipedia titles legally contain `/`
+("AC/DC"), and a path segment can't carry that safely through Starlette's default matching —
+`seed`/`target` on `/api/connect` already establish query params as this project's answer to
+exactly this problem; `/api/page` follows the same rule rather than reopening the question.
+
+**A second lazy singleton, `_wiki_client()`, instead of reaching into `_caches()`'s `LinkCache`.**
+`LinkCache` holds a `WikiClient` as a private implementation detail for the *search* path.
+Reaching into `_caches()[0]._client` to reuse it would have coupled an unrelated route to another
+class's internals to save nothing — `WikiClient` itself does no caching (`LinkCache` is the
+cache), so a second instance costs only a second `USER_AGENT` read. Kept separate on purpose;
+"lazy `@lru_cache(maxsize=1)`, imports the heavy dependency inside the function" is the *pattern*
+worth reusing here, not the specific existing instance.
+
+**`network.on("click", ...)`, not `selectNode`.** `click` fires uniformly for node clicks, edge
+clicks, and empty-canvas clicks, with `params.nodes`/`params.edges` saying which — one listener
+gives both "open panel on node" and "close panel on background click" for free, instead of wiring
+`selectNode` and `deselectNode` separately.
+
+**A parser bug found while writing the regression test, worth remembering for the next structural
+test.** The existing `test_settings_panel_is_not_inside_the_graph_container`'s `HTMLParser`
+subclass doesn't push void/self-closed elements (`<input ... />`) onto its ancestor-tracking stack
+— correct — but it also doesn't override `handle_startendtag`, whose *default* implementation
+calls `handle_endtag` for every self-closed tag regardless. Net effect: every self-closing `<input
+... />` silently popped one real ancestor off the stack. This never broke the original test because
+`#panel` is found early, before any of the settings panel's own self-closing inputs are parsed —
+but the new `#node-panel` sits *after* roughly a dozen of them, and the accumulated erroneous pops
+emptied the stack completely by the time the parser reached it, producing a false "not found."
+Fixed in the new test only (`handle_startendtag` overridden to call `handle_starttag` alone) — the
+original, already-green test was left untouched rather than "helpfully" fixed, per the
+non-destructive rule; it happens to still pass because its assertion never depended on exact stack
+depth, only on `#panel` being found at all and `#graph` being absent from its ancestors.
 
 ---
 

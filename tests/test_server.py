@@ -115,6 +115,105 @@ def test_settings_panel_is_not_inside_the_graph_container(client):
     )
 
 
+def test_node_panel_is_not_inside_the_graph_container(client):
+    """Same regression as test_settings_panel_is_not_inside_the_graph_container,
+    for the node-detail panel added alongside it: a THIRD sibling of #graph inside
+    #canvas, never nested inside #graph, for the identical Canvas._create() reason.
+    A standalone test (not a parametrization of the existing one) so that
+    already-green regression test stays untouched.
+    """
+    from html.parser import HTMLParser
+
+    class _Nesting(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.stack: list[str | None] = []
+            self.node_panel_ancestors: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            element_id = dict(attrs).get("id")
+            if element_id == "node-panel":
+                self.node_panel_ancestors = [a for a in self.stack if a]
+            if tag not in {"input", "br", "img", "meta", "link", "hr"}:
+                self.stack.append(element_id)
+
+        def handle_endtag(self, tag):
+            if self.stack:
+                self.stack.pop()
+
+        def handle_startendtag(self, tag, attrs):
+            # Self-closed void tags (<input .../>) never pushed onto the stack
+            # above, so they must not pop one either — the base HTMLParser's
+            # default calls handle_endtag too, which would unwind real ancestors
+            # (there are over a dozen self-closing <input>s inside #panel, above
+            # where #node-panel sits in the document).
+            self.handle_starttag(tag, attrs)
+
+    parser = _Nesting()
+    parser.feed(client.get("/").text)
+
+    assert parser.node_panel_ancestors, "#node-panel not found in index.html"
+    assert "graph" not in parser.node_panel_ancestors, (
+        f"#node-panel is nested inside #graph (ancestors: {parser.node_panel_ancestors}) "
+        "— vis-network will delete it on startup"
+    )
+
+
+class _FakeWikiClient:
+    """Stand-in for WikiClient: get_summary looks up a canned title -> dict table."""
+
+    def __init__(self, summaries: dict[str, dict]):
+        self._summaries = summaries
+
+    def get_summary(self, title: str) -> dict | None:
+        return self._summaries.get(title)
+
+
+@pytest.fixture
+def fake_wiki_client(monkeypatch):
+    def _install(summaries: dict[str, dict]) -> _FakeWikiClient:
+        client = _FakeWikiClient(summaries)
+        monkeypatch.setattr(app_module, "_wiki_client", lambda: client)
+        return client
+
+    return _install
+
+
+class TestPageDetailEndpoint:
+    """/api/page: the on-demand lookup behind the node-click detail panel."""
+
+    def test_returns_title_summary_and_url(self, client, fake_wiki_client):
+        fake_wiki_client(
+            {
+                "Cat": {
+                    "summary": "Cats are small mammals.",
+                    "url": "https://en.wikipedia.org/wiki/Cat",
+                }
+            }
+        )
+
+        response = client.get("/api/page", params={"title": "Cat"})
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "title": "Cat",
+            "summary": "Cats are small mammals.",
+            "url": "https://en.wikipedia.org/wiki/Cat",
+        }
+
+    def test_404s_for_a_title_with_no_summary(self, client, fake_wiki_client):
+        fake_wiki_client({})
+
+        response = client.get("/api/page", params={"title": "Not A Real Page Xyz"})
+
+        assert response.status_code == 404
+        assert "message" in response.json()
+
+    @pytest.mark.parametrize("params", [{}, {"title": ""}, {"title": "x" * 201}])
+    def test_rejects_bad_title(self, client, params):
+        assert client.get("/api/page", params=params).status_code == 422
+
+
 def test_config_endpoint_reports_the_knobs(client):
     from wikimap import config
 

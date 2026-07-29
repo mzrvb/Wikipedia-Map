@@ -123,6 +123,25 @@ before swallowing; `max_nodes` counts **distinct** pages rather than re-counting
 crash mid-write leaves truncated JSON that permanently breaks that title on every later run. Fix is
 `.tmp` + `Path.replace`. See HISTORY. Do not fix early; do not lose track of it.
 
+**Node-click detail panel — done (2026-07-28).** Clicking any node in the graph, mid-run or
+after, opens a third panel (`#node-panel`, a sibling of `#graph`/`#panel` inside `#canvas` —
+same nesting rule as the settings panel) showing title, score, depth, the page's real Wikipedia
+summary, and a link to the article. Backend: `WikiClient.get_summary(title)` reads `.summary`
+and `.fullurl` off the *same* `wikipediaapi` page object `get_links` already fetches (one page,
+two API calls — `extracts` then `info` — not four), and a new `GET /api/page?title=` returns it
+as plain JSON (a query param, not `/api/page/{title}`, because titles like "AC/DC" contain `/`,
+which a path segment can't carry safely — same reasoning `seed`/`target` already use). Fetched
+on demand only when a node is clicked, never during the run — the `Node`/`Step` contracts stay
+title+score+depth only, on purpose; page detail doesn't belong on every tick. `_wiki_client()` is
+a second lazy `@lru_cache(maxsize=1)` singleton, deliberately separate from `_caches()`'s
+`LinkCache`-owned one, to avoid coupling this route to another class's private state. Frontend
+wires a single `network.on("click", ...)` handler (not `selectNode`) so one listener covers both
+"open on node" and "close on background click." 90 fast tests green (was 80), `ruff check` clean,
+no existing assertion changed. Manual click-through in a real browser was **not** performed by the
+agent that built this (a background session with no browser attached) — the backend was verified
+directly (`curl /api/page?title=Cat`, and a 404 case), but visually confirming the panel opens is
+still owed before calling this fully proven end-to-end.
+
 **No shared base above Connect and Explore yet.** A parent `Algorithm` class holding `__init__` and
 an anchor-parameterised ranking helper was proposed and deliberately deferred until Connect is
 entirely done — generalising from one mode is a guess. `ConnectAlgorithm` stays the only base.

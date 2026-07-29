@@ -60,6 +60,74 @@ class TestWikiClient:
         assert client._wiki.page.call_count == 2
 
 
+class TestGetSummary:
+    """The lookup behind the node-click detail panel — a title's real summary text
+    and article URL, fetched on demand rather than during a search run."""
+
+    def test_returns_summary_and_url_for_an_existing_page(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient()
+        page = MagicMock()
+        page.summary = "Cats are small mammals."
+        page.exists.return_value = True
+        page.fullurl = "https://en.wikipedia.org/wiki/Cat"
+        client._wiki.page = MagicMock(return_value=page)
+
+        result = client.get_summary("Cat")
+
+        assert result == {
+            "summary": "Cats are small mammals.",
+            "url": "https://en.wikipedia.org/wiki/Cat",
+        }
+
+    def test_returns_none_for_a_nonexistent_page(self, monkeypatch):
+        """.fullurl is only worth the "info" API call for a page that exists — a
+        plain class (not MagicMock) so the property access is unmissable, and
+        recorded rather than raised: get_summary's except is deliberately broad
+        (matching get_links), so a raise here would just be retried and swallowed,
+        silently passing the test whether or not the bug it's checking for exists."""
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient()
+        accessed = []
+
+        class _NonexistentPage:
+            summary = ""
+
+            def exists(self):
+                return False
+
+            @property
+            def fullurl(self):
+                accessed.append(True)
+                return "unexpected"
+
+        client._wiki.page = MagicMock(return_value=_NonexistentPage())
+
+        assert client.get_summary("Not A Real Page Xyz") is None
+        assert not accessed
+
+    def test_fetches_off_one_page_object(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient()
+        page = MagicMock()
+        page.summary = "Summary."
+        page.exists.return_value = True
+        page.fullurl = "https://en.wikipedia.org/wiki/Cat"
+        client._wiki.page = MagicMock(return_value=page)
+
+        client.get_summary("Cat")
+
+        client._wiki.page.assert_called_once_with("Cat")
+
+    def test_retries_then_gives_up(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient(retries=2, delay=0)
+        client._wiki.page = MagicMock(side_effect=RuntimeError("boom"))
+
+        assert client.get_summary("Anything") is None
+        assert client._wiki.page.call_count == 2
+
+
 def _api_response(titles: list[str], continue_token: str | None = None):
     """Fake requests.Response for a list=backlinks query."""
     payload = {"query": {"backlinks": [{"title": t} for t in titles]}}

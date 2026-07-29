@@ -184,6 +184,74 @@ function applyLabelFade() {
 
 network.on("zoom", applyLabelFade);
 
+// --- node detail panel -------------------------------------------------
+// Third sibling of #graph inside #canvas — see index.html's comment on why it
+// can never be nested inside #graph.
+const nodePanel = document.getElementById("node-panel");
+const nodePanelTitle = document.getElementById("node-panel-title");
+const nodePanelMeta = document.getElementById("node-panel-meta");
+const nodePanelSummary = document.getElementById("node-panel-summary");
+const nodePanelLink = document.getElementById("node-panel-link");
+if (!nodePanel) console.error("wikimap: no element #node-panel — node detail disabled");
+
+// Guards against a slow /api/page response for a node the user has since
+// clicked away from landing in the panel late and overwriting what's shown now.
+let openNodeTitle = null;
+
+function closeNodePanel() {
+  openNodeTitle = null;
+  nodePanel?.classList.add("hidden");
+}
+
+function nodeMetaLine(node) {
+  const score = node.score == null ? "score —" : `score ${node.score.toFixed(3)}`;
+  const depth = node.depth == null ? "depth —" : `depth ${node.depth}`;
+  return `${score} · ${depth}`;
+}
+
+function showNodeDetail(id) {
+  if (!nodePanel) return;
+  const node = nodes.get(id);
+  if (!node) return; // clicked an id vis-network still remembers but the DataSet doesn't
+
+  openNodeTitle = id;
+  nodePanel.classList.remove("hidden");
+  nodePanelTitle.textContent = node.id;
+  nodePanelMeta.textContent = nodeMetaLine(node);
+  nodePanelSummary.textContent = "Loading summary…";
+  nodePanelLink.classList.add("hidden");
+
+  fetch(`/api/page?${new URLSearchParams({ title: id })}`)
+    .then((r) => r.json().then((body) => ({ ok: r.ok, body })))
+    .then(({ ok, body }) => {
+      if (openNodeTitle !== id) return; // user has since clicked a different node
+      if (!ok) {
+        nodePanelSummary.textContent = body.message || "Summary unavailable.";
+        return;
+      }
+      // textContent, not innerHTML — same rule as log(): this is real Wikipedia
+      // text landing in the DOM verbatim.
+      nodePanelSummary.textContent = body.summary || "No summary available.";
+      nodePanelLink.href = body.url;
+      nodePanelLink.classList.remove("hidden");
+    })
+    .catch(() => {
+      if (openNodeTitle !== id) return;
+      nodePanelSummary.textContent = "Could not reach the server.";
+    });
+}
+
+if (nodePanel) {
+  // "click", not "selectNode": click fires for node/edge/background clicks alike
+  // (params.nodes/params.edges say which), so one listener gives us both "open on
+  // node" and "close on background click" instead of combining two events.
+  network.on("click", (params) => {
+    if (params.nodes.length > 0) showNodeDetail(params.nodes[0]);
+    else closeNodePanel();
+  });
+  bind("node-panel-close", "click", closeNodePanel);
+}
+
 function loadDisplay() {
   let saved = {};
   try {
@@ -262,6 +330,7 @@ form.addEventListener("submit", (event) => {
   nodes.clear();
   edges.clear();
   logEl.replaceChildren();
+  closeNodePanel(); // the previously-inspected node no longer exists in the graph
   recorded = [];
   setReplayEnabled(false);
 
@@ -325,6 +394,7 @@ bind("replay", "click", () => {
   nodes.clear();
   edges.clear();
   logEl.replaceChildren();
+  closeNodePanel();
   setReplayEnabled(false);
 
   let i = 0;

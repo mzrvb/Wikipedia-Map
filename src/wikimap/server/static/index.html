@@ -52,11 +52,13 @@
     </form>
 
     <main>
-      <!-- #canvas is the positioned wrapper; #graph and #panel are SIBLINGS.
-           They must never be nested: vis-network's Canvas._create() begins with
+      <!-- #canvas is the positioned wrapper; #graph, #panel, and #node-panel are
+           SIBLINGS. They must never be nested: vis-network's Canvas._create() begins
+           with
              for (; container.hasChildNodes(); ) container.removeChild(firstChild)
            so anything inside #graph is deleted the moment the Network is built.
-           Putting the panel in there once already wiped it and killed app.js. -->
+           Putting the settings panel in there once already wiped it and killed
+           app.js — the same trap applies to any new panel added here. -->
       <div id="canvas">
         <div id="graph"></div>
         <div id="panel">
@@ -157,6 +159,19 @@
             </label>
             <button id="reset-display" type="button">Reset display</button>
           </details>
+        </div>
+        <!-- Opens on clicking any node, any time (mid-run or after). Empty text
+             nodes on load; app.js fills them via textContent only, never innerHTML —
+             a page summary is real Wikipedia text landing in the DOM verbatim, same
+             rule as #log. -->
+        <div id="node-panel" class="hidden">
+          <div class="node-panel-head">
+            <strong id="node-panel-title"></strong>
+            <button id="node-panel-close" type="button" aria-label="Close">×</button>
+          </div>
+          <p id="node-panel-meta" class="hint"></p>
+          <p id="node-panel-summary"></p>
+          <a id="node-panel-link" class="hidden" href="#" target="_blank" rel="noopener noreferrer">Open on Wikipedia ↗</a>
         </div>
       </div>
       <aside id="log" aria-live="polite"></aside>
