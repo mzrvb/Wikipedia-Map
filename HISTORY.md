@@ -9,10 +9,64 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## 2026-07-29 — `bfs.py`'s `max_nodes` cap was checked once per whole ply, not per node
+
+Found while reasoning about why an uncapped, unranked search like `bfs` (deliberately not
+`top_k`-capped — see the module docstring, and don't reconsider that: pruning it would make it
+just as blind as greedy/astar to the exact routes it exists to catch them missing) could still
+overshoot its own resource cap by a lot. The check sat at the top of the `while` loop — once per
+whole ply — and a ply is every node at one depth level processed as a batch, with no size limit of
+its own. A concrete before-fix repro (a page fanning out to 10 links, each of THOSE fanning out to
+10 more): asked for `max_nodes=20`, got **111** nodes back. On greedy/astar this can't happen
+because `top_k` bounds a single tick's fan-out to ≤20; `bfs` had no equivalent backstop at any
+granularity finer than "the whole ply."
+
+**Fix:** moved the check inside the per-node loop, so it fires right after each node's own
+(already-fetched, so free) fan-out finishes — overshoot is now bounded by one page's link count,
+not by an entire ply's. Same pass also fixed a second, smaller waste: even after the two searches'
+`meeting` point was found mid-ply, the old code kept fetching the rest of that ply's not-yet-touched
+nodes before checking `meeting` at the bottom of the loop. Fixed to `break` the moment `meeting` is
+set — nothing later in the same ply can be shorter anyway (the depth-level invariant the module
+docstring already proves), so those fetches were pure waste. The two fixes shipped together since
+they touch the same lines and interact: checking `meeting` before checking the cap, in that fixed
+order, is *how* "found the target" is guaranteed to win over "hit the cap" when a single discovery
+would trigger both — no extra flag needed, just the order of two `if`s.
+
+104 fast tests green (was 102, +2: one pins the tightened overshoot bound, one constructs a case
+where the same discovery would trip both `meeting` and the cap, asserting "reached" wins), `ruff
+check` clean, no existing assertion changed.
+
+**Considered and rejected in the same conversation: pruning `bfs`'s branching (via `top_k`, ranked
+or even an arbitrary un-ranked slice) to control cost.** Any pruning — cosine-ranked or not — makes
+`bfs` capable of missing the true shortest path, which is exactly greedy/astar's failure mode. A
+"ground truth" that shares its checkee's blind spot isn't one. Real, not-yet-built levers that *don't*
+touch this guarantee, for whenever `bfs`'s cost (inherent to being exhaustive on Wikipedia's ~300
+branching factor) is worth attacking again: firing a ply's fetches concurrently (threads; the fetch
+layer is sync I/O, so this doesn't need the async-httpx rewrite `CLAUDE.md` already defers) helps
+both directions equally; batching multiple titles into one MediaWiki request (`titles=A|B|C`) was
+considered and set aside — `list=backlinks` has no multi-title equivalent at all, so it would only
+ever help the forward half of the search, for the cost of bypassing `wikipediaapi` in `get_links`
+(a real architectural change, and exactly the async-httpx upgrade `CLAUDE.md` already says is
+deliberately deferred, not something to back into as a side effect of a bfs perf pass).
+
+Also worth a note for future-me: this session's memory of the *predecessor* repo having request
+batching was checked against that repo's actual code and full git history — it isn't there, and
+never was (confirmed: no `titles=`, no batch function, in any commit). Don't trust that memory again
+without re-checking; it isn't a real pattern to port.
+
+---
+
 ## Picking up where 2026-07-28 left off
 
-**State: everything green and working.** 90 fast tests pass, `ruff check` clean, no empty files.
+**State: everything green and working.** 102 fast tests pass, `ruff check` clean, no empty files.
 Run `uvicorn wikimap.server.app:app --reload` and open <http://127.0.0.1:8000>.
+
+**All three Connect algorithms (greedy, astar, bfs) are now live-cross-checked against each other
+on the same real pair** (`Mitsubishi → Kanye West`): astar found 3 hops, bfs (after fixing the
+ply-synchronization bug below) also found 3 hops via a different route, and neither is longer than
+the other — which is the sanity check bfs exists to provide. Worth re-running occasionally on other
+pairs as a regression check, since nothing in the test suite exercises three real algorithms against
+one live pair at once.
 
 **The node-click detail panel (entry below) is proven at the API level but not yet clicked in a
 real browser** — it was built in a background session with no browser attached. Backend verified
@@ -108,6 +162,55 @@ Fixed in the new test only (`handle_startendtag` overridden to call `handle_star
 original, already-green test was left untouched rather than "helpfully" fixed, per the
 non-destructive rule; it happens to still pass because its assertion never depended on exact stack
 depth, only on `#panel` being found at all and `#graph` being absent from its ancestors.
+
+### `connect/bfs.py`: bidirectional BFS, and a shortest-path bug caught only by testing it live
+
+Built as planned — bidirectional (`get_links` forward from the seed, `get_backlinks` backward from
+the target), deliberately NOT cosine-capped (decision C's top-K ranking is exactly what makes
+greedy/A* untrustworthy as judges of their own optimality, so the algorithm built to check them
+can't use the same shortcut), and touching no embedding at all (`Node.score` is always `None` —
+a genuine efficiency win, not just an omission, since embedding is the expensive part of every
+other algorithm's tick and BFS never needed a ranking).
+
+**The interesting part was getting "first meeting found is provably shortest" to actually be true.**
+Two wrong attempts, both caught by the same live test, neither caught by the unit test suite:
+
+1. **Attempt 1** picked which side to expand next by comparing the two frontier *queues'* raw
+   length, updated as each queue drained node-by-node. This lets one side's queue empty out while
+   racing several hops deep, because a queue that happens to stay short keeps "winning" the
+   comparison regardless of how deep it already is. Live-tested on `Mitsubishi → Kanye West`
+   (chosen because it's a real, well-connected, unrelated pair — exactly the case that stresses
+   branching factor) it returned a 4-hop route, `Mitsubishi -> Aircraft -> Sleep -> Bipolar disorder
+   -> Kanye West`. That's a contradiction on its face: A* (no optimality guarantee at all) had
+   already found a 3-hop route on the same pair moments earlier. A "ground truth" algorithm
+   returning a *worse* answer than the heuristic search it exists to grade is not a performance
+   quirk, it's a correctness bug.
+2. **Attempt 2** fixed the queue-draining problem by comparing whole-frontier **size** between
+   completed plies instead of mid-drained queues. Still wrong, for a subtler reason: size is not
+   depth. A side whose frontier happens to stay numerically small — a thin, one-link-per-page
+   chain, common on Wikipedia — keeps winning the size comparison and can race ahead in actual hop
+   depth indefinitely, while the other side's wider-but-shallower frontier never gets a turn. Same
+   live query, still wrong (would have reproduced the same class of failure had it been re-tested
+   before noticing the reasoning gap).
+3. **The fix:** compare depth *level* directly — `forward_depth[frontier[0]]` vs
+   `backward_depth[frontier[0]]`, expand whichever is lower (ties either way, since a tie means both
+   sides are about to process the same depth number). This bounds the two sides' depths to differ
+   by at most one at any moment, which is the actual textbook bidirectional-BFS invariant: by the
+   time any node at depth *d* is discovered, every node at depth *< d* on **both** sides has already
+   been fully expanded, so nothing shorter remains unexplored. Re-tested live: 3 hops,
+   `Mitsubishi -> Bank -> Liverpool -> Kanye West` — no longer than A*'s 3-hop answer, which is the
+   actual bar "ground truth" has to clear.
+
+**Why the unit tests caught neither bug.** The fake-graph test fixtures were small enough that the
+depth gap the bugs depend on never opened up wide enough to matter, or — in the one test that *did*
+happen to exercise cross-direction meeting — the bug produced a *different meeting node* on an
+otherwise still-correct path, and the original assertion had over-specified which node the searches
+met at (an implementation detail, not a guarantee) rather than just the path and hop count. Fixed the
+test to assert only what's actually promised. **The general lesson, worth repeating next to the
+vis-network one from 2026-07-26: a unit test suite proves the algorithm does what the fakes allow it
+to do; it does not substitute for running the real thing on a real, adversarially-chosen pair.** Both
+bugs here were only caught because the two algorithms were cross-checked against each other live —
+neither would have been caught by either algorithm's own test suite in isolation.
 
 ---
 

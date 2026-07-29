@@ -12,11 +12,11 @@ Both modes build the graph live on screen as the search runs.
 
 ## Status
 
-**Working MVP with live settings and two algorithms.** Roadmap steps 1–6 done, plus Connect's A* —
-run a search in the browser, watch the graph build live, switch algorithms, tune the search knobs,
-and reshape the rendering (node size, forces, colour-by) from a settings panel. Click any node
-(mid-run or after) to open a panel with its real Wikipedia summary and a link to the article. 90
-fast tests green, `ruff check` clean.
+**Working MVP with live settings and three algorithms — Connect is feature-complete.** Run a search
+in the browser, watch the graph build live, switch between greedy / A* / bidirectional BFS, tune
+the search knobs, and reshape the rendering (node size, forces, colour-by) from a settings panel.
+Click any node (mid-run or after) to open a panel with its real Wikipedia summary and a link to the
+article. 104 fast tests green, `ruff check` clean.
 
 Settings come in two kinds, and the split is deliberate:
 
@@ -37,8 +37,8 @@ A physics slider can never reach the algorithm, so it never goes near `config.py
 | 5 | FastAPI + SSE server streaming Steps to a vis-network frontend | done |
 | 6 | Per-run params — knobs travel as `run()` arguments, wired to UI controls | done |
 | 7a | `connect/astar.py` — weighted A* on the semantic heuristic | done |
-| 7b | `connect/bfs.py` — bidirectional, uncapped | next |
-| 8 | Explore mode — `explore/bfs.py`, `explore/beam.py` | after Connect |
+| 7b | `connect/bfs.py` — bidirectional, uncapped, ground truth for the other two | done |
+| 8 | Explore mode — `explore/bfs.py`, `explore/beam.py` | next |
 
 Sample run — `Cat → Astronomy`, the same pair under both algorithms:
 
@@ -107,7 +107,7 @@ uvicorn wikimap.server.app:app --reload
 | --- | --- |
 | `GET /` | The frontend (form, graph canvas, run log) |
 | `GET /api/connect?seed=&target=` | SSE stream — one `step` event per algorithm tick |
-| `GET /api/connect?…&algorithm=greedy\|astar` | Which Connect algorithm to run (default `greedy`) |
+| `GET /api/connect?…&algorithm=greedy\|astar\|bfs` | Which Connect algorithm to run (default `greedy`) |
 | `GET /api/connect?…&top_k=&max_depth=&max_nodes=&heuristic_weight=&hop_scale=` | Per-run knobs. All optional; out-of-range values give a 422 |
 | `GET /api/config` | The knobs *and their bounds*, read-only (contract 1: the frontend never hardcodes them) |
 | `GET /api/page?title=` | One page's real Wikipedia summary + URL, fetched on demand when a node is clicked |

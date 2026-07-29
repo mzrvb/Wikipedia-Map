@@ -93,11 +93,9 @@ each new Connect algorithm proves the shared pieces before Explore inherits them
    warm caches survive and concurrent runs can't stomp each other. Bounds are published via
    `/api/config` and the frontend's controls are built from them. `TOP_K = 20` is a **ceiling, not a
    fixed value** (`TOP_K_BOUNDS`); decision C locks the mechanism and the maximum.
-2. ~~**`connect/astar.py`**~~ **Done 2026-07-26.** Then **`connect/bfs.py`** — see HISTORY for why
-   BFS is neither cheap nor the ground-truth baseline the brief implies. It must be **bidirectional**
-   and must not be cosine-capped (a cosine-capped BFS just reproduces greedy's bias and cannot
-   answer "did greedy miss a shorter route"). `LinkCache.get_backlinks` (done, 2026-07-26) is the
-   data layer it needs.
+2. ~~**`connect/astar.py`**~~ **Done 2026-07-26.** ~~**`connect/bfs.py`**~~ **Done 2026-07-28** —
+   see HISTORY for why BFS is neither cheap nor the ground-truth baseline the brief implies, and for
+   the ply-synchronization bug it took two attempts to get right.
 3. **Explore** (`explore/bfs.py`, `explore/beam.py`) only once Connect is complete.
 
 **Where a knob lives — `config.py` vs the frontend.** Contract 1 covers *search* knobs: anything that
@@ -142,13 +140,46 @@ agent that built this (a background session with no browser attached) — the ba
 directly (`curl /api/page?title=Cat`, and a 404 case), but visually confirming the panel opens is
 still owed before calling this fully proven end-to-end.
 
+**`connect/bfs.py` — done (2026-07-28).** Bidirectional, uncapped BFS — the ground-truth check on
+greedy/A*'s shortest-path claims. Registered in `ALGORITHMS`, so it appears in the frontend's
+algorithm picker automatically (no frontend changes needed at all). Never computes an embedding
+(`Node.score` is always `None`); forward nodes carry `+hops-from-seed`, backward nodes carry
+`-hops-from-target` so "colour by depth" visually separates the two searches meeting in the middle.
+
+⚠️ **Took two attempts to get the direction-selection rule right — read this before touching the
+turn logic.** Bidirectional BFS is only a ground truth if it processes nodes in true non-decreasing
+depth order across BOTH sides combined; get that wrong and it can report a longer route than a
+heuristic search already found, which defeats the entire point of building it. Attempt 1 compared
+raw queue *length* after partial draining — wrong, let one side's queue race ahead in depth while
+the other's shallower frontier waited. Attempt 2 compared full-frontier *size* between plies — still
+wrong, a side with a small frontier (e.g. a thin one-link-per-page chain) can keep "winning" that
+comparison and race ahead in depth indefinitely. **The only safe comparison is depth LEVEL itself**
+— expand whichever side's current frontier sits at the lower depth number, full ply at a time. Both
+bugs were caught by the same live test (`Mitsubishi → Kanye West`): attempt 1 returned 4 hops when
+A* had already proven 3 exist; the depth-level fix returned 3, matching. Neither bug was caught by
+the unit tests, because the fakes used small graphs where the bug either didn't trigger or produced
+an answer that was merely *not the specific node* a test asserted on (fixed to assert path/hop-count
+only, not which node the searches met at, since that's a genuine implementation detail).
+
+102 fast tests green (was 90, +12), `ruff check` clean, no existing assertion changed.
+
+**`bfs.py` `max_nodes` overshoot fix — done (2026-07-29).** The cap was only checked once per
+whole ply (a ply has no size limit of its own, unlike greedy/astar's `top_k`-bounded ticks) — a
+repro fanning out 10×10 asked for `max_nodes=20`, got 111. Fixed by checking after every node's own
+fan-out instead, plus an early `break` once the two searches meet (stop wasting fetches on the rest
+of that ply — nothing later in it can be shorter). See HISTORY for why pruning `bfs`'s branching to
+fix this was considered and rejected (it would cost `bfs` the "ground truth" guarantee it exists
+for), and for the two real, not-yet-built levers that don't have that problem (concurrent fetch
+within a ply; batching, rejected for now since it can't help the backlinks half at all). 104 fast
+tests green (was 102, +2), `ruff check` clean, no existing assertion changed.
+
 **No shared base above Connect and Explore yet.** A parent `Algorithm` class holding `__init__` and
 an anchor-parameterised ranking helper was proposed and deliberately deferred until Connect is
 entirely done — generalising from one mode is a guess. `ConnectAlgorithm` stays the only base.
 
 Every other module under `src/wikimap/` beyond `wiki/`, `embed.py`, `graph/`, `algorithms/`, and
 `server/` remains a placeholder holding only a docstring that states that file's responsibility
-(astar/bfs/explore not yet built).
+(explore not yet built).
 
 The authoritative plan remains `~/Downloads/wikimap_brief.md`.
 
