@@ -3,8 +3,11 @@
 Every algorithm is a generator of Steps (contract 2) that reads its knobs from
 config (contract 1). It never draws and never touches the transport.
 
-`ConnectAlgorithm` is the shared shape for the Connect-mode pathfinders (greedy,
-astar, bfs). It fixes the API decided in step 4 (HISTORY, "Option A"): the caches
+`ConnectAlgorithm` is the shared shape for the Connect-mode pathfinder(s) — as of
+2026-07-31 that's `DefaultConnect` alone (greedy/astar stripped, see
+`algorithms/connect/__init__.py`), but the ABC stays in place so a future addition
+still has a fixed shape to implement. It fixes the API decided in step 4 (HISTORY,
+"Option A"): the caches
 an algorithm needs are injected once at construction — long-lived and shared, the
 same dependency-injection shape `LinkCache(client)` and `EmbeddingCache(embedder)`
 already use — while the job (seed -> target) arrives per call. The ABC guarantees
@@ -33,9 +36,9 @@ if TYPE_CHECKING:
 class ConnectAlgorithm(ABC):
     """Base shape for a Connect pathfinder. Declares; runs nothing itself.
 
-    Subclasses (GreedyConnect, AStarConnect, ...) are siblings that each *replace*
-    `run` — they do not wrap each other. `@abstractmethod` forbids instantiating this
-    base directly and forces every subclass to provide its own `run`.
+    Subclasses (currently just DefaultConnect) each *replace* `run` — they would not
+    wrap each other if a second one existed. `@abstractmethod` forbids instantiating
+    this base directly and forces every subclass to provide its own `run`.
     """
 
     def __init__(self, link_cache: LinkCache, embed_cache: EmbeddingCache) -> None:

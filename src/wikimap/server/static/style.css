@@ -1,12 +1,12 @@
 /* Layout for the mode switcher, graph canvas, and settings panel. */
 
 :root {
-  --bg: #14161c;
-  --panel: #1c1f27;
-  --line: #2b2f3a;
-  --text: #e8e8ea;
-  --muted: #8b90a0;
-  --accent: #f0b429;
+  --bg: #ffffff;
+  --panel: #f5f6f8;
+  --line: #d9dce3;
+  --text: #1a1c22;
+  --muted: #6b7280;
+  --accent: #b8860b;
 }
 
 * { box-sizing: border-box; }
@@ -78,14 +78,15 @@ header .mode-toggle button:disabled {
   border-bottom: 1px solid var(--line);
 }
 
-#run-form label {
+/* "Connect ____ and ____" reads as one sentence, not two stacked From/To
+   fields — normal case and normal weight, unlike the old uppercase/tracked
+   label style, so it reads as prose rather than a form field caption. */
+#run-form .connect-phrase {
   display: flex;
   align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  gap: 10px;
+  color: var(--text);
+  font-size: 15px;
 }
 
 #run-form input {
@@ -100,8 +101,8 @@ header .mode-toggle button:disabled {
 
 #run-form input:focus { outline: 1px solid var(--accent); }
 
-/* Sized to the input alone, not the label (which also holds "From"/"To" text) —
-   the suggestion list below is positioned absolute against THIS, not the label. */
+/* Sized to the input alone, not the whole phrase — the suggestion list below is
+   positioned absolute against THIS, not .connect-phrase. */
 #run-form .input-wrap { position: relative; }
 
 /* Above #panel/#node-panel's z-index:2 so it can never end up underneath either
@@ -129,10 +130,6 @@ header .mode-toggle button:disabled {
   padding: 6px 8px;
   border-radius: 4px;
   font-size: 13px;
-  /* #run-form label uppercases/tracks its text; real Wikipedia titles shouldn't
-     inherit that — undo it here rather than moving these <li> out of the label. */
-  text-transform: none;
-  letter-spacing: normal;
   color: var(--text);
   cursor: pointer;
 }
@@ -262,9 +259,6 @@ main {
 
 #panel small { color: var(--muted); font-size: 10px; }
 
-/* Knob exists but the selected algorithm ignores it. */
-#panel label.inactive { opacity: 0.35; }
-
 #panel button {
   width: 100%;
   margin-top: 4px;
@@ -327,11 +321,18 @@ main {
 }
 #node-panel-link:hover { text-decoration: underline; }
 
-/* --- run log ------------------------------------------------------------- */
+/* --- run log: a transit-map "line" -----------------------------------------
+   Each entry is a STOP on a rail running top-to-bottom, not a plain scrolling
+   line — the dot's shape/colour says what KIND of stop it is (origin, an
+   ordinary round, the destination, a service interruption), and the connecting
+   segment drawn between consecutive stops (.entry::after) is what makes the
+   whole thing read as one continuous line instead of a list. Entries are
+   APPENDED in run order (see app.js's log()) specifically so this reads
+   top-to-bottom like a route map, unlike the old newest-on-top log. */
 #log {
   width: 340px;
   border-left: 1px solid var(--line);
-  padding: 12px;
+  padding: 12px 16px;
   overflow-y: auto;
   background: var(--panel);
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
@@ -339,13 +340,73 @@ main {
 }
 
 #log .entry {
-  padding: 5px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  position: relative;
+  padding: 7px 0 7px 22px;
   word-break: break-word;
 }
 
-#log .entry.status { color: var(--muted); }
-#log .entry.failure { color: #f87171; }
+/* The rail segment BELOW this stop, connecting it to the next. Omitted on
+   :last-child since there's nothing after it yet — the instant a new entry
+   lands, the entry that WAS last stops matching :last-child and grows its
+   own connector automatically, with no JS bookkeeping required. */
+#log .entry:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 22px;
+  bottom: -7px;
+  width: 2px;
+  background: var(--line);
+}
+
+#log .dot {
+  position: absolute;
+  left: 0;
+  top: 8px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-sizing: border-box;
+}
+
+/* Origin/destination read as the "big station" ends of the line, the way a
+   subway map draws its termini larger than the stops in between. */
+#log .entry.origin .dot { left: -1px; top: 7px; width: 14px; height: 14px; background: #4ade80; }
+#log .entry.destination .dot {
+  left: -2px;
+  top: 6px;
+  width: 16px;
+  height: 16px;
+  /* Same amber as the winning route's highlight on the graph (PATH_COLOR in
+     app.js) — the log's destination marker and the graph's path line are
+     deliberately the same colour, so a viewer's eye connects the two. */
+  background: #facc15;
+  box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.25);
+}
+
+/* A round advances BOTH search directions at once, together, in the same tick
+   (default.py's bidirectional design — no side goes first) — split the dot to
+   say so, rather than picking one colour and hiding the other half of the
+   story. Same blue/orange as "side" colour-by in app.js, so the log and the
+   graph agree on what forward/backward mean. */
+#log .entry.round .dot { background: conic-gradient(#2563eb 0deg 180deg, #ea580c 180deg 360deg); }
+
+/* Hollow rings, not fills, for entries that aren't a real stop the search
+   made: generic status chatter and "no route found" both read as "nothing
+   arrived here" rather than "the train stopped here." */
+#log .entry.status .dot { background: transparent; border: 2px solid var(--muted); }
+#log .entry.exhausted .dot { background: transparent; border: 2px solid #f87171; }
+#log .entry.failure .dot { background: #f87171; }
+
+#log .entry .label { display: block; }
+#log .entry.status .label { color: var(--muted); }
+#log .entry.failure .label { color: #f87171; }
+
+/* The old per-step timing benchmark ("[+123ms · 4.56s total]") now sits below
+   its stop as a small caption instead of cluttering the label line — the same
+   role a distance/time marker plays along a real transit line. */
+#log .entry .meta { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
 
 @media (max-width: 800px) {
   main { flex-direction: column; }

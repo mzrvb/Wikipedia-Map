@@ -9,6 +9,301 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## 2026-07-31 — Frontend polish pass: path highlighting, colour-by modes, transit-map log, light theme
+
+Five changes, done in sequence in one session, each requested separately but building on the
+last. Recorded together because several of them share reasoning and a later one (the log
+redesign) directly reuses a data shape the first one (path highlighting) introduced.
+
+**1. `Step` gained a `path` field, and the graph highlights the winning route.**
+`default.py` already computed the full seed → … → target route on success — it was building
+the string for the `"reached … via A -> B -> C"` note. That prose was the ONLY place the route
+existed; highlighting it in the graph would have meant the frontend regexing a log line
+written for humans, which is exactly the kind of fragile coupling contract 2 exists to
+prevent (an algorithm's note text is not an API). Fixed at the source instead: `Step` gained
+`path: list[str] | None = None` (`graph/contracts.py`), populated on both success paths in
+`default.py` (the `seed == target` short-circuit, and the normal meeting-in-the-middle case),
+`None` everywhere else including exhaustion. This is additive to contract 2, not a violation
+of it — the algorithm still isn't drawing anything, it's exposing data it already had.
+`highlightPath()` (`app.js`) amber-borders every node the path names and thickens/recolours
+the connecting edges (edge ids are always `${path[i]}->${path[i+1]}`, which holds for both the
+forward half and the backward half of a bidirectional route — confirmed by walking through
+`_reconstruct`'s edge-direction invariants rather than assumed). An `onPath` flag persists on
+each DataSet item so a later display-setting change (`applyDisplay()`'s resize pass) can
+re-derive the border instead of silently losing it the next time `nodeColor()` recomputes a
+node's fill. 76 tests still green — two existing tests in `test_default.py` gained a
+`.path == [...]` assertion; no new test functions needed since the path was already being
+computed and exercised.
+
+**2. Five `colour by` modes instead of two, plus a `path` field the code was ALREADY carrying.**
+Asked to brainstorm ways to use colour before building anything (kept as a short design
+discussion, not implemented until agreed) — landed on five options ranked by cost: side
+(cheapest, the sign of `depth` was already there), recency (needs one new client-tracked field,
+`tickCounter`/`maxTick`), off-path dimming (a toggle, not a colour scheme), discrete similarity
+bands (a bucketing function over the existing score), and semantic clustering (flagged as
+the one genuine outlier — needs real embedding vectors shipped past the anchor similarity
+score, which is a contract-level change and arguably an Explore-mode question given "finish
+Connect before starting Explore," so NOT built). User asked to build all four remaining ones
+so they could compare by eye rather than argue over which to pick abstractly — a legitimate
+use of "build several options to A/B" that doesn't conflict with "don't add speculative
+abstractions," since these are genuinely different, complete features, not variations on a
+guess. `recencyColor` reuses `scoreColor`'s exact gradient formula, keyed on tick-fraction
+instead of score-fraction, rather than inventing a new colour math for what's structurally
+the same idea. "Dim off-path" reads `onPath` (set by `highlightPath()` above) rather than a
+second, separately-tracked boolean, so it can't drift out of sync with what's actually
+highlighted.
+
+**3. The run log restyled as a transit-map line — and "ply" removed from user-facing text.**
+Asked to make the existing scrolling log ("move history") more visually aesthetic, with
+transit-system maps as the explicit inspiration. Implemented as pure CSS (a `::after`
+pseudo-element per entry draws the rail segment to the NEXT entry — no SVG, no manual
+position math, and a new entry automatically grows its own connector the instant an older
+entry stops being `:last-child`), with dot shape/colour keyed to a `stepKind(step)`
+classifier: green terminus for the run's start, an amber glowing terminus for the destination
+(checked via `step.path` from change #1 — the exact payoff of making that data structured
+instead of leaving it as prose), a two-tone blue/orange dot for an ordinary tick (reusing
+`side` colour-by's palette from change #2), and hollow rings for status chatter and "no route
+found." Log order flipped from newest-on-top (`prepend`) to chronological (`append` +
+`scrollTop` auto-follow), since a route only reads correctly top-to-bottom in travel order —
+a real, deliberate behavior change, not an incidental one.
+
+While explaining what a "ply" was (the word `default.py` and this log used for one tick of
+both search directions advancing), a chess/board-game analogy was reached for first. That
+was a mistake, called out directly and correctly: chess's "ply" means one PLAYER's move, i.e.
+one side goes at a time — precisely the turn-taking model `default.py`'s 2026-07-30 redesign
+exists to NOT have (see that entry below: the whole point was removing the "whose turn"
+question, because comparing sides to decide who goes next is what made the old design starve
+backward). Reaching for that analogy while trying to explain the current design risked
+teaching the exact misconception the redesign was fixing. Restarted from Level 1 with no
+board-game framing, grounded directly in `default.py`'s loop body (both `ThreadPoolExecutor`
+submissions happen in the same block, unordered). Then, on request, renamed "ply" to "round"
+everywhere user-visible: the `Step` note text `default.py` emits, the matching CSS class
+(`.entry.ply` → `.entry.round`), and the JS classifier's string match. Left "ply" alone in
+`default.py`'s own module docstring and internal comments — that prose is explaining the
+term's lineage from `bfs.py`'s history for a future code reader, a different audience than
+someone watching the app run, and rewriting it would have discarded accurate historical
+reasoning to fix a UI word choice.
+
+**4. Light theme.** Every colour in the frontend already lived in `style.css`'s `:root`
+custom properties (`--bg`, `--panel`, `--line`, `--text`, `--muted`, `--accent`) from the
+original build — flipping the whole UI to light was a single edit to those six values. The
+only colours CSS variables couldn't reach were two hardcoded hex strings in `app.js`'s
+vis-network constructor options (node label font colour, default edge colour) — vis-network
+draws to a `<canvas>`, which is opaque to CSS, so those two got updated by hand to match.
+
+**5. Run form reworded.** Two separately-labelled "From"/"To" fields became one flowing
+`Connect ____ and ____` phrase (a `.connect-phrase` flex row in `index.html`). Cost: each
+input previously got its accessible name for free by sitting inside its own `<label>`; losing
+that wrapper meant adding an explicit `aria-label` to each input instead, so screen readers
+still get a name.
+
+Net: 76 fast tests green throughout (unchanged from the pre-session count — this was a
+frontend-heavy pass, and the one Python change was additive to an existing contract), `ruff
+check` clean, `node --check` clean on every `app.js` edit. None of it was click-verified in a
+real browser by the agent that built it (no `claude-in-chrome` tooling this session) — same
+open item as the node-click panel and per-node sizing before it.
+
+## 2026-07-31 — `greedy.py`/`astar.py` stripped: `default.py` is now the only Connect algorithm
+
+A direct, informed user call, made in a conversation comparing wikimap against
+[jwngr/sdow](https://github.com/jwngr/sdow) (a Six Degrees of Wikipedia tool that precomputes the
+entire link graph offline into SQLite and answers with plain BFS over a graph it already fully
+has — a fundamentally different, much easier problem than wikimap's live per-request crawl). That
+comparison surfaced real frustration with Explore (still unbuilt) and with maintaining three
+Connect algorithms whose live-tested results were not actually close: on the hardest cross-domain
+pair tested (`LaMelo Ball → Spanish Revolution`, recorded 2026-07-30, below), `greedy` failed
+outright (wrong-page dead end at `max_depth`), `astar` never finished (7+ minutes, trapped in a
+plateau), and `default` solved it in 3.37s by structurally avoiding both failure modes via
+bidirectional search. Keeping three options was not offering a real choice — it was one working
+algorithm plus two others that mostly demonstrated their own failure modes, at the cost of every
+future fix, every config knob, and every frontend control needing to account for three code paths
+instead of one.
+
+**What was removed:** `algorithms/connect/greedy.py`, `algorithms/connect/astar.py`,
+`tests/test_greedy.py`, `tests/test_astar.py`. `config.py` lost `MAX_NODES`/`MAX_NODES_BOUNDS`,
+`HEURISTIC_WEIGHT`/`HEURISTIC_WEIGHT_BOUNDS`, `HEURISTIC_HOP_SCALE`/`HEURISTIC_HOP_SCALE_BOUNDS` —
+all three were astar-only as of the `bfs.py` removal earlier the same day, so nothing reads them
+anymore. `RunParams` lost `max_nodes`/`heuristic_weight`/`hop_scale` and their clamps. The server's
+`/api/connect` lost the `algorithm=`, `max_nodes=`, `heuristic_weight=`, and `hop_scale=` query
+params; `/api/config` stopped publishing `algorithms`/`default_algorithm` and those same knobs'
+bounds. The frontend lost the Algorithm `<select>`, the "max nodes"/"weight W"/"hop scale" Search
+panel rows, and the `syncAlgorithmUI()` dimming logic that used to grey them out per algorithm —
+none of that logic has anything left to dim.
+
+**What was deliberately kept, not simplified further:** `ALGORITHMS` (now `{"default":
+DefaultConnect}`) and `_algorithm(name)` in `server/app.py` stay a registry/lookup rather than
+being collapsed into a bare `DefaultConnect()` call. `ConnectAlgorithm` (the ABC in
+`algorithms/base.py`) stays in place too. Cost is near zero — one dict entry, one indirection —
+and it means a genuinely new Connect algorithm (not a resurrection of greedy/astar) can still drop
+in later without restructuring the server or the frontend's knob-rendering code.
+
+**What this costs:** the "watch breadth-first vs. greedy vs. balanced A* vs. bidirectional beam
+search" comparison — previously the point of the weight-`W` slider (`W=0` behaves breadth-first,
+`W` large behaves greedy, astar in between) — is gone; the app now demonstrates one search
+strategy, not a spectrum. If a teaching/demo use case for that comparison resurfaces later, it
+should come back explicitly as a deliberate "watch this fail" contrast, not as a default the user
+has to pick between.
+
+76 fast tests green (was recorded as 122 pre-`bfs.py`-removal, down through both removals the same
+day), `ruff check` clean. `TestAlgorithmSelection` in `test_server.py` was replaced by a smaller
+`TestAlgorithmRegistry` pinning what's left of the registry shape (one entry, shared caches across
+lookups) rather than multi-algorithm selection, since that behavior no longer exists to test.
+
+## 2026-07-31 — `connect/bfs.py` removed: too slow to be worth the ground-truth guarantee
+
+A direct, informed user call ("bfs takes too long, lets operate it as beam search" → after being
+shown what that would actually cost → "just delete it lowkey its so fucking slow notw orth"),
+made after two explicit warnings about what it gives up. Recorded in detail because it's a real
+architectural reversal, not a routine deletion.
+
+**What was asked first, and why it was redirected.** The request was to turn `bfs.py` into a beam
+search for speed. Flagged before writing any code: `bfs.py`'s entire reason for existing was being
+*uncapped and unranked* — the ground-truth check on whether greedy/A*/default's claimed shortest
+paths actually were shortest (a cosine-capped search "can only ever find routes cosine was willing
+to consider," per its own docstring). Capping it into a beam search would remove that guarantee
+from the whole codebase, with nothing left to replace it. Also surfaced: `default.py` **already
+is** a bidirectional beam search — built 2026-07-30 by taking `bfs.py`'s ply-synchronized shape and
+adding decision C's top-K cap back on. Reading `default.py` in full confirmed "bfs as beam search"
+would land almost line-for-line on what `default.py` already does (same threaded per-ply fetch,
+same batched embedding, same three-source meeting detection, same `_reconstruct`). Asked again,
+explicitly, whether to still convert `bfs.py` in place given that near-duplication. The answer was
+to skip the beam-search conversion entirely and just delete `bfs.py`.
+
+**What actually got removed:** `algorithms/connect/bfs.py` and `tests/test_bfs.py`, plus its entry
+in `algorithms/connect/__init__.py`'s `ALGORITHMS` registry (the frontend's algorithm picker is
+config-driven, so it drops out of the dropdown automatically — no frontend registry change
+needed). Three algorithms remain: greedy, astar, default.
+
+**Consequence, stated plainly because it's easy to lose track of later:** there is currently no
+algorithm in this codebase that can verify another one's shortest-path claim. `astar.py` and
+`default.py`'s docstrings both still document their own known non-optimality (inadmissible cosine
+heuristic, prune-before-explore respectively) — those limitations were always true, but until
+today there was a way to check them against ground truth on any given run. There no longer is.
+If a future session wants that guarantee back, it needs a new, undirected, unranked search built
+from scratch — not a revival of `bfs.py`'s beam-search-shaped middle ground, since that middle
+ground is `default.py`.
+
+**Fallout handled in the same pass, not left dangling:** `bfs.py` was one of two readers of
+`config.MAX_NODES` (the other, `astar.py`, was reinstated as a reader the very same day in an
+unrelated backend-review pass — see the entry below this one). `max_nodes` stays on `RunParams`;
+only its ownership comment changed (astar-only now). `BACKLINK_LIMIT` survives untouched — 
+`default.py` reads it too for its own backward half. Every docstring/comment across
+`algorithms/base.py`, `greedy.py`, `astar.py`, `default.py`, `config.py`, `app.js`, `index.html`,
+`README.md`, and the test suite that named `bfs.py` as a live component was swept and corrected in
+the same pass (either removed or converted to past tense), rather than left to rot as a dangling
+reference to a file that no longer exists. 120 fast tests green (was 123, -3 for `test_bfs.py`'s
+removal), `ruff check` clean.
+
+---
+
+## 2026-07-31 — live-tested: `De'Aaron Fox → Dwight Howard` "1 hop" was real, not a bug
+
+Reported as a suspected bug: `default` found `DeAaron Fox -> Dwight Howard` in 1 hop, and the
+user couldn't find any such connection reading the actual `De'Aaron Fox` article. Investigated
+by pulling the same link list the app's cache actually used (`LinkCache.get_links("DeAaron
+Fox")` — 310 real ns0 links, `Dwight Howard` genuinely among them) and then the parsed article
+HTML to find *where*: both players' pages transclude the **"Jordan Brand Classic All-American
+Game — Boys' MVPs"** navbox at the very bottom of the page (a collapsed year-by-year award list),
+and each was that game's MVP in a different year. Real hyperlink, just buried in a navbox rather
+than the prose — invisible on a normal read-through of the article, easy to mistake for the
+algorithm inventing a connection.
+
+Not a bug, and nothing was changed. Recorded because it's the same failure-shaped-like-a-feature
+category as the `TIME`/`Time` magazine finding in the 2026-07-30 hard-pairs entry below: the
+"real Wikipedia link graph, not generated associations" locked decision means Connect will
+surface *any* true hyperlink, including trivia-navbox links a human skimming the page would never
+notice. Worth knowing as a standing category of "correct but unsatisfying" result before
+mistaking the next one for a fetch/cache bug.
+
+---
+
+## 2026-07-31 — backend review: `embed.py` cache-anchor gap, `greedy.py` seed==target silence
+
+A full read-through of `wiki/`, `embed.py`, `graph/`, `algorithms/`, and `server/app.py`, prompted
+by "review the backend." Two confirmed bugs, fixed; one confirmed risk, documented but not yet
+fixed (capping proposals pending a decision).
+
+**1. `EmbeddingCache.DEFAULT_DATA_DIR` was still a bare relative path.** `Path("data/embeddings")`
+resolves against the process's current working directory, not the project root — precisely the
+bug the 2026-07-27 review pass fixed for `wiki/cache.py`'s `LinkCache` (`Path(__file__).resolve()
+.parents[3]`, see that entry above). `embed.py` never got the equivalent fix. Practical
+consequence: launch `uvicorn` from any directory but the repo root and the entire embedding cache
+(the model-forward-pass cost, which is the whole point of caching it — "embedding ~300 links per
+node is the dominant cost, so pay it once per page") goes cold silently, with no error, just a
+slow rebuild and a stray `data/embeddings` folder wherever the process was started. It slipped
+through the 2026-07-27 pass's own blind spot: "every `test_embed.py` test already passed
+`data_dir=tmp_path` explicitly" — true then and still true now, so no test ever exercised the
+real default. Fixed the same way as `LinkCache` (`Path(__file__).resolve().parents[2]` — one
+level shallower, since `embed.py` lives directly in `wikimap/`, not a subpackage). New regression
+test computes the expected path independently from the test file's own location rather than
+importing `embed`'s constant, so it can't pass by sharing the bug it's checking for.
+
+**2. `GreedyConnect.run` had no `seed == target` special case.** `astar.py`, `default.py`, and
+`bfs.py` all check this up front and emit an explicit `"reached ... in 0 hops"` Step; greedy
+fell through to its generic start Step and then simply returned, since `while current != target`
+is immediately false. Not a crash, just silence — the frontend gets a start frame and a `done`
+frame with nothing in between announcing the run actually succeeded. Fixed to match the other
+three. The one existing test that asserted the old silent behavior
+(`test_seed_equal_target_yields_only_the_start`) was rewritten, not preserved — this is a
+deliberate behavior change closing an inconsistency, not a regression the old test should keep
+pinning. Renamed to match astar's test of the same purpose
+(`test_seed_equal_to_target_terminates_immediately`).
+
+**3. Flagged, not fixed: `astar.py`'s worst-case bound doesn't hold.** The 2026-07-30 entry below
+("`max_nodes` removed from greedy/astar/default") reasoned that `MAX_DEPTH * TOP_K` (≤ 240)
+bounds all three algorithms' worst case, since each caps a node's own fan-out to `TOP_K`. That
+holds for `greedy` (walks exactly one path, one expansion per depth level) and `default` (pools
+and caps to `TOP_K` *per ply, per side*, regardless of how many parent nodes contributed
+candidates). It does NOT hold for `astar`: its `while frontier:` loop keeps popping and expanding
+every distinct node discovered below `max_depth`, with no ply structure and no total cap — so the
+real worst case is closer to `TOP_K` raised to the depth, not multiplied by it. This is the
+likely actual explanation for the `astar` 7-plus-minute plateau already recorded below (stuck
+exhausting dozens of similarly-scored "Spanish [sports league]" pages on `LaMelo Ball → Spanish
+Revolution`) — filed at the time as a distinct "breadth without progress" failure mode, but more
+likely fallout from removing astar's only backstop the same day, based on a bound that doesn't
+actually apply to it. Two capping approaches were proposed (see the session's conversation, not
+reproduced here) — bring back a form of `max_nodes` scoped to `astar` alone, or add an
+expansion-count cap distinct from the node-count one `bfs.py` uses — but neither is implemented;
+this needs a decision, not just a fix, since either changes what "the search gave up" means to a
+user watching it run.
+
+123 fast tests green (was 122, +1: the new `embed.py` cache-anchor regression test).
+`ruff check` clean. No existing assertion changed except the one `greedy.py` test whose old
+assertion described the exact behavior being intentionally fixed.
+
+---
+
+## 2026-07-31 — Enter/Run now autocorrects seed/target to a real title
+
+Closes a gap a code review surfaced the same day: `greedy.py`/`default.py` compare `seed`/
+`target` to real Wikipedia link titles with exact string equality (`current != target`,
+`forward_depth[link] = depth`, etc.), but the frontend was sending whatever the user literally
+typed. Autocomplete (2026-07-30) already fixes this when a user clicks a suggestion — the click
+hands back a real, correctly-cased title — but nothing stopped someone typing `astronomy` and
+hitting Enter, walking straight through `Astronomy` without the algorithm ever recognizing it,
+and getting a misleading "stopped: hit cap" instead of a clear typo error.
+
+Fixed in `app.js`'s `submit` handler, not in the algorithms: `resolveTitle(query)` calls the
+same `/api/suggest` endpoint autocomplete already uses and takes the top hit, falling back to
+the original text if the search comes back empty (offline, gibberish query, etc.) so a failed
+lookup degrades to today's behavior rather than blanking the field. Both `seed` and `target`
+resolve concurrently (`Promise.all`) before the run starts, and the corrected values are written
+back into the input boxes so the user can see what's actually running. This covers Enter AND
+clicking Run for free — both fire the same `submit` event — so no separate keydown handling was
+needed.
+
+Deliberately not fixed by loosening the algorithms' comparison (e.g. case-insensitive or
+title-normalizing equality checks in two different search modules): `/api/suggest` already
+exists for exactly the job of turning arbitrary user text into a real title, so reusing it here
+is one small frontend addition instead of a second, redundant fix duplicated inside `greedy.py`
+and `default.py`. The submit handler is now `async` (previously synchronous) to `await` the
+resolution before opening the `EventSource`; Run is disabled immediately, before that round
+trip, so a second Enter/click during the brief resolve window can't fire a double run. No Python
+touched, 122 tests unaffected. Not yet manually verified in a browser — same caveat as the
+node-click panel and node-size-by-score work before it.
+
+---
+
 ## 2026-07-30 — live-tested algo speed/efficiency across all four algorithms on hard pairs
 
 Requested directly: a head-to-head comparison, using genuinely hard cross-domain pairs rather

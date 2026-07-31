@@ -9,11 +9,24 @@ Two layers of testing, mirroring test_wiki_client.py:
 """
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 
+from wikimap import embed
 from wikimap.embed import EmbeddingCache, cosine_similarity
+
+
+def test_default_data_dir_is_anchored_to_the_project_root_not_cwd():
+    """Regression test: DEFAULT_DATA_DIR must not be a bare relative Path — that
+    resolves against whatever directory the process was launched from, silently
+    missing the warm cache when uvicorn starts from anywhere but the repo root.
+    Computed independently here (from this test file's own location, a sibling of
+    src/) rather than importing embed's _PROJECT_ROOT, so the test can't pass just
+    because it shares a bug with the code under test."""
+    project_root = Path(__file__).resolve().parents[1]
+    assert embed.DEFAULT_DATA_DIR == project_root / "data" / "embeddings"
 
 
 class TestCosineSimilarity:

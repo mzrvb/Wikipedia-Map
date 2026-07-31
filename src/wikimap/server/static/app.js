@@ -18,8 +18,8 @@ const network = new vis.Network(
   document.getElementById("graph"),
   { nodes, edges },
   {
-    nodes: { shape: "dot", size: 12, font: { color: "#e8e8ea", size: 13 } },
-    edges: { color: { color: "#3f4350" }, arrows: { to: { scaleFactor: 0.4 } }, smooth: false },
+    nodes: { shape: "dot", size: 12, font: { color: "#1a1c22", size: 13 } },
+    edges: { color: { color: "#c7cbd6" }, arrows: { to: { scaleFactor: 0.4 } }, smooth: false },
     physics: {
       // Force-directed layout: the browser decides positions. The server never
       // sends coordinates — networkx stores structure only (see LEARN.md).
@@ -45,18 +45,54 @@ function bind(id, event, handler) {
   return el;
 }
 
-// --- log -------------------------------------------------------------------
+// --- log: rendered as a transit-map "line" (see style.css) -----------------
 const logEl = document.getElementById("log");
 
-function log(message, kind) {
+// One CSS class per stop kind (style.css draws the dot/rail for each). `step.path`
+// (contracts.py) is checked directly rather than sniffing the note's text for
+// "reached" — it's the one case with real structured data to key off instead of
+// parsing a string meant for humans.
+function stepKind(step) {
+  if (step.path) return "destination";
+  if (step.note.startsWith("start:")) return "origin";
+  if (step.note.startsWith("exhausted")) return "exhausted";
+  if (step.note.startsWith("round ")) return "round";
+  return undefined;
+}
+
+// `meta`, if given, renders as a small caption under the main label — the
+// per-step timing benchmark, kept visually separate from the note itself instead
+// of crammed into one line (see style.css's ".meta" comment).
+function log(message, kind, meta) {
   const line = document.createElement("div");
   line.className = "entry" + (kind ? " " + kind : "");
+
+  const dot = document.createElement("span");
+  dot.className = "dot";
+
+  const label = document.createElement("span");
+  label.className = "label";
   // textContent, never innerHTML: page titles come from Wikipedia and land in this
   // panel verbatim. textContent renders them as text, so a title containing markup
   // can never become markup. (vis-network labels are drawn on canvas, so they're
   // safe by construction — this panel is the only place raw titles meet the DOM.)
-  line.textContent = message;
-  logEl.prepend(line);
+  label.textContent = message;
+  line.append(dot, label);
+
+  if (meta) {
+    const metaEl = document.createElement("span");
+    metaEl.className = "meta";
+    metaEl.textContent = meta;
+    line.append(metaEl);
+  }
+
+  // Appended, not prepended: a transit line reads top-to-bottom as a route, run
+  // start at the top — the old log read newest-on-top, which doesn't have a
+  // "direction of travel" for this metaphor to attach to. scrollTop tracks the
+  // newest stop into view as the line grows, the same way a live departure board
+  // follows a train instead of making you scroll to find it.
+  logEl.append(line);
+  logEl.scrollTop = logEl.scrollHeight;
 }
 
 // --- timing ------------------------------------------------------------
@@ -81,14 +117,25 @@ function formatTiming(timing) {
 // `timing`, if given, is purely a log-line decoration (see above) — never used to
 // decide what gets drawn.
 function applyStep(step, seed, target, timing) {
+  // One tick per Step, for "colour by discovery order" below. Only recorded on a
+  // node's FIRST sighting (guarded by `existing` below) — a page reappearing in a
+  // later Step (linked from more than one page) must keep the tick it was actually
+  // discovered in, not the tick of its most recent mention.
+  tickCounter++;
   for (const node of step.nodes || []) {
     const isSeed = node.id === seed;
     const isTarget = node.id === target;
+    const existing = nodes.get(node.id);
+    // First sighting gets this tick; a repeat sighting keeps the tick it already
+    // has. Computed before nodeColor() below so "colour by discovery order" can
+    // see it — the raw Step node object has no `tick` field of its own.
+    const tick = existing ? existing.tick : tickCounter;
+    if (!existing) maxTick = tickCounter;
     const payload = {
       id: node.id,
       label: node.id,
       title: node.score == null ? node.id : `${node.id} — score ${node.score.toFixed(3)}`,
-      color: isSeed ? "#4ade80" : isTarget ? "#f472b6" : nodeColor(node),
+      color: isSeed ? "#4ade80" : isTarget ? "#f472b6" : nodeColor({ ...node, tick }),
       // sizeFor falls back to 12 internally so the graph still draws even if the
       // display panel failed to load — a broken settings UI must not take the
       // actual product down with it.
@@ -98,6 +145,7 @@ function applyStep(step, seed, target, timing) {
       // which is what makes a DataSet item a fine place to park real data.
       score: node.score,
       depth: node.depth,
+      tick,
       endpoint: isSeed || isTarget,
     };
     // update() = insert or overwrite. A page can legitimately reappear in a later
@@ -114,7 +162,60 @@ function applyStep(step, seed, target, timing) {
   // Only when the graph actually grew — a note-only Step (e.g. "reached target",
   // "stopped: node cap") has nothing new to fit the camera to.
   if ((step.nodes && step.nodes.length) || (step.edges && step.edges.length)) scheduleFit();
-  if (step.note) log(timing ? `${formatTiming(timing)} ${step.note}` : step.note);
+  if (step.note) log(step.note, stepKind(step), timing ? formatTiming(timing) : undefined);
+  // path is only ever set on the terminal success Step (see contracts.py) — every
+  // node/edge it names was already added by an earlier Step, so this only needs to
+  // restyle what's already on the canvas, never create anything.
+  if (step.path) highlightPath(step.path);
+}
+
+const PATH_COLOR = "#facc15"; // amber — distinct from every scoreColor/depthColor hue
+
+// Restyles the winning seed -> ... -> target route so it reads as one connected
+// line at a glance instead of making the viewer trace individual edge colours
+// through a graph that may hold hundreds of other nodes by the time a run finishes.
+// Node fill colour is left alone (still score/depth-coded) — only a border ring is
+// added, so "colour by" stays meaningful for path nodes too. `onPath` is kept on
+// the DataSet item (same trick as score/depth) so applyDisplay()'s resize pass
+// below can re-derive the border after a later display-setting change instead of
+// silently losing it the next time nodeColor() recomputes the fill.
+function highlightPath(path) {
+  const nodeUpdates = path
+    .map((id) => nodes.get(id))
+    .filter(Boolean)
+    .map((n) => ({
+      id: n.id,
+      onPath: true,
+      borderWidth: 3,
+      borderWidthSelected: 4,
+      color: { background: n.color, border: PATH_COLOR },
+    }));
+  if (nodeUpdates.length) nodes.update(nodeUpdates);
+
+  const edgeUpdates = [];
+  for (let i = 0; i < path.length - 1; i++) {
+    const id = `${path[i]}->${path[i + 1]}`;
+    if (edges.get(id)) edgeUpdates.push({ id, onPath: true, color: { color: PATH_COLOR }, width: 3 });
+  }
+  if (edgeUpdates.length) edges.update(edgeUpdates);
+
+  applyOffPathDim();
+}
+
+// "Dim off-path" (d-dimOffPath) is a separate toggle from "colour by" — it doesn't
+// pick a colour scheme, it mutes everything OUTSIDE whichever scheme is active so
+// the winning route reads as the one thing in full colour. A no-op until a path
+// actually exists (checked via `onPath` rather than a separate boolean, so this
+// can't drift out of sync with what highlightPath() actually marked), and it re-
+// runs from applyDisplay() too, so toggling the checkbox after a run finishes
+// still takes effect immediately.
+function applyOffPathDim() {
+  const anyPath = nodes.get().some((n) => n.onPath);
+  const dim = !!(display.dimOffPath && anyPath);
+  const nodeUpdates = nodes.get().map((n) => ({ id: n.id, opacity: dim && !n.onPath ? 0.15 : 1 }));
+  if (nodeUpdates.length) nodes.update(nodeUpdates);
+  const edgeUpdates = edges.get().map((e) => ({ id: e.id, opacity: dim && !e.onPath ? 0.15 : 1 }));
+  if (edgeUpdates.length) edges.update(edgeUpdates);
 }
 
 // Keeps the camera zoomed to fit the whole graph as it grows, instead of the user
@@ -136,7 +237,18 @@ function scheduleFit() {
 }
 
 function nodeColor(node) {
-  return display.colorBy === "depth" ? depthColor(node.depth) : scoreColor(node.score);
+  switch (display.colorBy) {
+    case "depth":
+      return depthColor(node.depth);
+    case "side":
+      return sideColor(node.depth);
+    case "recency":
+      return recencyColor(node.tick);
+    case "band":
+      return bandColor(node.score);
+    default:
+      return scoreColor(node.score);
+  }
 }
 
 // Same score-vs-depth split as colour, but for size: d-sizeBy picks a field and
@@ -157,8 +269,8 @@ function scoreSizeScale(score) {
 
 function depthSizeScale(depth) {
   if (depth == null) return 1;
-  // bfs's backward frontier carries negative depth (see bfs.py) — abs() so both
-  // directions shrink the same way as they get farther from their own endpoint.
+  // default's backward frontier carries negative depth (see default.py) — abs() so
+  // both directions shrink the same way as they get farther from their own endpoint.
   const hops = Math.abs(depth);
   return Math.max(0.5, 1.4 - hops * 0.12); // shrinks with distance, floors at 0.5x
 }
@@ -176,6 +288,42 @@ function depthColor(depth) {
   // than a gradient where depth 5 and 6 look identical.
   const hue = (depth * 47) % 360;
   return `hsl(${hue}, 60%, 55%)`;
+}
+
+// Two flat colours, not a gradient — this answers a different question than depth
+// does: depth says "how far from its own endpoint", side says "which half of the
+// bidirectional search found this at all" (default.py's forward/backward frontiers
+// — see its module docstring). Depth's per-hop gradient blurs that distinction
+// since both directions share one hue ramp; this makes the split absolute.
+function sideColor(depth) {
+  if (depth == null) return "#64748b";
+  return depth > 0 ? "#2563eb" : depth < 0 ? "#ea580c" : "#64748b";
+}
+
+// Same gradient formula as scoreColor, keyed on WHEN a node was first discovered
+// (tick / maxTick) rather than how similar it is. Distinct from depth: on a wide
+// round, tick order and hop count can diverge a lot (a same-round node discovered
+// late because its parent was slow to process still shares that round's depth).
+function recencyColor(tick) {
+  if (tick == null || maxTick === 0) return "#64748b";
+  const t = tick / maxTick;
+  const hue = 210 - 170 * t; // 210 = cool slate (earliest), 40 = warm gold (newest)
+  return `hsl(${hue}, 65%, ${35 + 20 * t}%)`;
+}
+
+// Discrete buckets instead of scoreColor's continuous gradient — trades precision
+// for scannability: at a glance, "which of 4 named bands is this node in" is
+// easier to compare across a big graph than judging a gradient's exact shade.
+const SIMILARITY_BANDS = [
+  { max: 0.25, color: "#64748b" }, // far
+  { max: 0.5, color: "#3b82f6" }, // medium
+  { max: 0.75, color: "#f59e0b" }, // close
+  { max: Infinity, color: "#dc2626" }, // very close
+];
+
+function bandColor(score) {
+  if (score == null) return "#64748b";
+  return SIMILARITY_BANDS.find((band) => score <= band.max).color;
 }
 
 // --- display settings ------------------------------------------------------
@@ -225,13 +373,22 @@ function applyDisplay() {
   });
 
   // Endpoints stay larger than ordinary nodes, so their per-node size override has
-  // to be rewritten whenever the base size or size-by field changes.
-  const resized = nodes.get().map((n) => ({
-    id: n.id,
-    size: (n.endpoint ? 1.6 : 1) * sizeFor(n),
-    color: n.endpoint ? n.color : nodeColor(n),
-  }));
+  // to be rewritten whenever the base size or size-by field changes. Endpoints are
+  // always path nodes when a path exists (seed/target are its first/last stops),
+  // and their `color` is already the {background, border} object highlightPath()
+  // built — reusing it as-is preserves the border with no extra branch. A
+  // non-endpoint path node's color is a flat string from nodeColor(), so its
+  // border has to be re-added explicitly or a later display change would erase it.
+  const resized = nodes.get().map((n) => {
+    const fill = n.endpoint ? n.color : nodeColor(n);
+    return {
+      id: n.id,
+      size: (n.endpoint ? 1.6 : 1) * sizeFor(n),
+      color: n.onPath && !n.endpoint ? { background: fill, border: PATH_COLOR } : fill,
+    };
+  });
   if (resized.length) nodes.update(resized);
+  applyOffPathDim();
 
   applyLabelFade();
   localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify(display));
@@ -372,6 +529,12 @@ let fitInterval = null;
 let recorded = [];
 let recordedTimings = []; // parallel to recorded — one {deltaMs, elapsedMs} per Step
 let lastRun = null;
+// "Colour by discovery order" state (recencyColor above). tickCounter increments
+// once per applyStep() call (live or replayed); maxTick is the highest tick any
+// node has actually been stamped with, used to normalize recencyColor's gradient.
+// Both reset alongside `recorded` — a fresh run/replay restarts the clock.
+let tickCounter = 0;
+let maxTick = 0;
 // Anchors for the current run's benchmarks (see "timing" above). Null between runs
 // so termination handlers can tell "no run has started" from "run took ~0ms".
 let runStartTime = null;
@@ -400,6 +563,14 @@ function setReplayEnabled(enabled) {
 // helps the user land on a real title instead of guessing one that dead-ends.
 const SUGGEST_MIN_CHARS = 2;
 const SUGGEST_DEBOUNCE_MS = 200;
+
+// Shared by the dropdown below AND resolveTitle() (near the submit handler) —
+// one place that knows how to ask the server for real titles matching a query.
+function fetchSuggestions(query) {
+  return fetch(`/api/suggest?${new URLSearchParams({ q: query })}`)
+    .then((r) => (r.ok ? r.json() : []))
+    .catch(() => []);
+}
 
 function setupAutocomplete(inputId, listId) {
   const input = document.getElementById(inputId);
@@ -444,21 +615,14 @@ function setupAutocomplete(inputId, listId) {
       return;
     }
     debounceTimer = setTimeout(() => {
-      fetch(`/api/suggest?${new URLSearchParams({ q: query })}`)
-        .then((r) => (r.ok ? r.json() : []))
-        .then((titles) => {
-          // Stale guard: a slow response for a query the user has since typed
-          // past must not overwrite what a faster, more recent one already drew —
-          // same shape as showNodeDetail()'s openNodeTitle check, keyed on the
-          // query text instead of a node id.
-          if (input.value.trim() !== query) return;
-          renderSuggestions(titles);
-        })
-        .catch(() => {
-          // A failed lookup just means no suggestions — the user can still type
-          // and submit a title by hand, so this fails silently rather than
-          // logging over what may just be a flaky connection.
-        });
+      fetchSuggestions(query).then((titles) => {
+        // Stale guard: a slow response for a query the user has since typed
+        // past must not overwrite what a faster, more recent one already drew —
+        // same shape as showNodeDetail()'s openNodeTitle check, keyed on the
+        // query text instead of a node id.
+        if (input.value.trim() !== query) return;
+        renderSuggestions(titles);
+      });
     }, SUGGEST_DEBOUNCE_MS);
   });
 
@@ -470,6 +634,23 @@ function setupAutocomplete(inputId, listId) {
 
 setupAutocomplete("seed", "seed-suggestions");
 setupAutocomplete("target", "target-suggestions");
+
+// Best-effort autocorrect for whoever presses Enter/Run without clicking a
+// dropdown suggestion first. default.py compares seed/target to real Wikipedia
+// link titles with exact string equality, so a hand-typed "astronomy" never
+// matches the "Astronomy" the search actually walks through — the run just
+// dead-ends at max_depth with a misleading "stopped" message instead of a
+// clear typo error. Autocomplete already solves this when a suggestion is
+// clicked; this closes the gap for Enter/Run by resolving to the top
+// /api/suggest hit for whatever was typed. Deliberately a frontend fix, not a
+// change to the algorithm's comparison logic: /api/suggest already exists for
+// exactly this "turn user text into a real title" job, so reusing it here is
+// one small addition instead of a second, redundant fix inside the algorithm.
+async function resolveTitle(query) {
+  if (query.length < SUGGEST_MIN_CHARS) return query;
+  const titles = await fetchSuggestions(query);
+  return titles.length ? titles[0] : query; // no match — fall back to what was typed
+}
 
 function stop() {
   if (source) {
@@ -488,9 +669,25 @@ function stop() {
   lastStepTime = null;
 }
 
-form.addEventListener("submit", (event) => {
+form.addEventListener("submit", async (event) => {
   event.preventDefault();
   stop();
+
+  const rawSeed = document.getElementById("seed").value.trim();
+  const rawTarget = document.getElementById("target").value.trim();
+  if (!rawSeed || !rawTarget) return;
+
+  // Disabled immediately, before the resolve-title round trip below, so a
+  // second Enter/click during that brief window can't fire a second run.
+  runBtn.disabled = true;
+
+  const [seed, target] = await Promise.all([resolveTitle(rawSeed), resolveTitle(rawTarget)]);
+  // Reflect the correction visibly — the user should see what actually ran,
+  // not silently get a different search than the text still sitting in the box.
+  document.getElementById("seed").value = seed;
+  document.getElementById("target").value = target;
+  document.getElementById("seed-suggestions").hidden = true;
+  document.getElementById("target-suggestions").hidden = true;
 
   nodes.clear();
   edges.clear();
@@ -498,14 +695,11 @@ form.addEventListener("submit", (event) => {
   closeNodePanel(); // the previously-inspected node no longer exists in the graph
   recorded = [];
   recordedTimings = [];
+  tickCounter = 0;
+  maxTick = 0;
   setReplayEnabled(false);
-
-  const seed = document.getElementById("seed").value.trim();
-  const target = document.getElementById("target").value.trim();
-  if (!seed || !target) return;
   lastRun = { seed, target };
 
-  runBtn.disabled = true;
   stopBtn.disabled = false;
 
   // URLSearchParams handles the encoding for every value at once, so titles with
@@ -514,7 +708,6 @@ form.addEventListener("submit", (event) => {
   const query = new URLSearchParams({
     seed,
     target,
-    algorithm: document.getElementById("algorithm").value || "default",
     ...knobValues(),
   });
   source = new EventSource(`/api/connect?${query}`);
@@ -582,6 +775,8 @@ bind("replay", "click", () => {
   logEl.replaceChildren();
   closeNodePanel();
   setReplayEnabled(false);
+  tickCounter = 0;
+  maxTick = 0;
 
   let i = 0;
   const timer = setInterval(() => {
@@ -601,7 +796,7 @@ bind("replay", "click", () => {
 // no value/min/max in the HTML; everything below is filled in from /api/config, so
 // the browser never keeps a copy of a number that could drift out of sync. If the
 // fetch fails the controls simply stay disabled and the server's defaults apply.
-const KNOBS = ["top_k", "max_depth", "max_nodes", "heuristic_weight", "hop_scale"];
+const KNOBS = ["top_k", "max_depth"];
 let defaults = null;
 
 function knobValues() {
@@ -619,41 +814,10 @@ function applyDefaults() {
   for (const knob of KNOBS) document.getElementById(knob).value = defaults[knob];
 }
 
-// Weight/hop-scale knobs are dimmed for algorithms that ignore them (greedy, bfs),
-// so the panel never implies a control is doing something it isn't. Both astar and
-// default (bidirectional A* — see default.py) read them, so both stay active.
-//
-// max nodes is the mirror image: bfs-only as of 2026-07-30 (see config.py) — the
-// other three cap fan-out per node already, so max_depth * top_k bounds them without
-// it.
-function syncAlgorithmUI() {
-  const chosen = document.getElementById("algorithm").value;
-  for (const label of document.querySelectorAll(".weighted")) {
-    label.classList.toggle("inactive", chosen !== "astar" && chosen !== "default");
-  }
-  for (const label of document.querySelectorAll(".nodecap")) {
-    label.classList.toggle("inactive", chosen !== "bfs");
-  }
-  document.querySelector("header .mode").textContent = `Connect — ${chosen}`;
-}
-
 fetch("/api/config")
   .then((r) => r.json())
   .then((cfg) => {
     defaults = Object.fromEntries(KNOBS.map((knob) => [knob, cfg[knob]]));
-
-    const picker = document.getElementById("algorithm");
-    for (const name of cfg.algorithms) {
-      const option = document.createElement("option");
-      option.value = name;
-      // textContent, not innerHTML — same rule as the log panel.
-      option.textContent = name;
-      picker.append(option);
-    }
-    picker.value = cfg.default_algorithm;
-    picker.disabled = false;
-    picker.addEventListener("change", syncAlgorithmUI);
-    syncAlgorithmUI();
 
     for (const knob of KNOBS) {
       const [min, max] = cfg.bounds[knob];

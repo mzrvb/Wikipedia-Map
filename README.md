@@ -12,26 +12,33 @@ Both modes build the graph live on screen as the search runs.
 
 ## Status
 
-**Working MVP with live settings and four algorithms — Connect is feature-complete.** Run a search
-in the browser, watch the graph build live with the camera auto-fitting to it, switch between
-greedy / A* / bidirectional BFS / default (bidirectional beam search), tune the search knobs, and
-reshape the rendering (node size — flat, or by score/depth — forces, colour-by) from a settings
-panel. A Connect/Explore toggle sits in the header — Explore is disabled until that mode is
-actually built. Click any node (mid-run or after) to open a panel with its real Wikipedia summary
-and a link to the article. FROM/TO fields autocomplete against real Wikipedia titles as you type.
-The run log shows per-step and total-run timing (`[+123ms · 4.56s total]`), measured in the
-browser. 122 fast tests green, `ruff check` clean.
+**Working MVP, one Connect algorithm — Connect is feature-complete.** Run a search
+(type "Connect ____ and ____") in the browser and watch the graph build live with the camera
+auto-fitting to it, via a bidirectional beam search (`connect/default.py`), tuning the search
+knobs and reshaping the rendering (node size — flat, or by score/depth — forces, colour-by:
+similarity as a gradient or discrete bands, depth, which search direction found a node, or
+discovery order) from a settings panel. Once a route is found it's highlighted in the graph
+(amber border/edges along the winning path) and an optional "dim off-path" toggle mutes
+everything else. A Connect/Explore toggle sits in the header — Explore is disabled until that
+mode is actually built. Click any node (mid-run or after) to open a panel with its real
+Wikipedia summary and a link to the article. The from/to fields autocomplete against real
+Wikipedia titles as you type, and autocorrect to the closest real title on Enter/Run even if
+you never clicked a suggestion. The run log renders as a transit-map line — each tick is a
+"stop," styled by kind (start, an ordinary round, the destination, no route found) — showing
+per-step and total-run timing (`[+123ms · 4.56s total]`) as a caption under each stop, measured
+in the browser. Light theme. 76 fast tests green, `ruff check` clean.
+
+**2026-07-31: `greedy`/`astar` stripped, `default.py` is now the ONLY Connect algorithm.** A
+direct, informed user call — repeated live testing showed the same result on hard cross-domain
+pairs (greedy dead-ended, astar plateaued for 7+ minutes, default solved them in seconds), so
+maintaining three approaches was costing more than the comparison was worth. See `HISTORY.md`.
 
 Settings come in two kinds, and the split is deliberate:
 
 | | Owned by | Changes | Stored in |
 | --- | --- | --- | --- |
-| **Search** — top-K, max depth, weight W, hop scale | `config.py` | what the algorithm does | server; sent as query params |
+| **Search** — top-K, max depth | `config.py` | what the algorithm does | server; sent as query params |
 | **Display / Forces** — node size, arrows, physics, colour-by | the browser | how the graph is drawn | `localStorage` |
-
-`max_nodes` is a search knob too, but as of 2026-07-30 it's read by `bfs` alone — greedy/astar/
-default are already bounded by `top-K` per tick, so a separate node cap never did real work for
-them (see `HISTORY.md`).
 
 A physics slider can never reach the algorithm, so it never goes near `config.py`. The rule:
 *changes the search → `config.py`; changes the picture → frontend.*
@@ -41,34 +48,17 @@ A physics slider can never reach the algorithm, so it never goes near `config.py
 | 1 | Data layer — `wiki/client.py` (ns0 filtering, UA, retry) + two-layer disk-backed cache | done |
 | 2 | Embeddings — `embed.py`: cosine similarity, lazy-loaded model, cached by title | done |
 | 3 | Graph model + contracts — `graph/contracts.py` (`Step`, `Grade`, …), `graph/model.py` | done |
-| 4 | First Connect algorithm — `algorithms/base.py` ABC + `connect/greedy.py` | done |
+| 4 | First Connect algorithm — `algorithms/base.py` ABC + `connect/greedy.py` | removed 2026-07-31 — see below |
 | 5 | FastAPI + SSE server streaming Steps to a vis-network frontend | done |
 | 6 | Per-run params — knobs travel as `run()` arguments, wired to UI controls | done |
-| 7a | `connect/astar.py` — weighted A* on the semantic heuristic | done |
-| 7b | `connect/bfs.py` — bidirectional, uncapped, ground truth for the other two | done |
-| 7c | `connect/default.py` — bidirectional beam search, the app's default | done |
+| 7a | `connect/astar.py` — weighted A* on the semantic heuristic | removed 2026-07-31 — see below |
+| 7b | `connect/bfs.py` — bidirectional, uncapped, ground truth for the other two | removed 2026-07-31 — too slow to be worth the guarantee (see HISTORY) |
+| 7c | `connect/default.py` — bidirectional beam search, now the ONLY Connect algorithm | done |
 | 8 | Explore mode — `explore/bfs.py`, `explore/beam.py` | next |
 
-Sample run — `Cat → Astronomy`, the same pair under both algorithms:
-
-```
-greedy (4 hops), similarity climbing each move:
-  'Cat' -> 'Science (journal)'              (score 0.460)
-  'Science (journal)' -> 'Spiral nebulae'   (score 0.542)
-  'Spiral nebulae' -> 'Galactic astronomy'  (score 0.794)
-  'Galactic astronomy' -> 'Astronomy'       (score 1.000)
-
-A* (3 hops), ordering by f = g + W·h:
-  expand 'Cat'               (g=0, h=3.20, f=3.20)
-  expand 'Science (journal)' (g=1, h=2.16, f=3.16)
-  ...
-  reached 'Astronomy' in 3 hops: Cat -> Age of Discovery -> Astronomer -> Astronomy
-```
-
-A* usually finds shorter routes but expands more pages. Note it is **not guaranteed** to find the
-shortest one — the cosine heuristic can overestimate, and a 2-hop route (`Cat → Night vision →
-Astronomy`) exists that the default settings miss. Lowering the weight `W` searches more widely and
-costs more expansions; `W = 0` orders purely by hops and `W` very large reproduces greedy.
+Sample run — `Cat → Astronomy` solved by `default.py`'s bidirectional beam search, 4 hops,
+meeting in the middle from both ends at once. See `HISTORY.md` for the fuller cross-algorithm
+comparisons recorded before greedy/astar were removed.
 
 First run for a given page is slow (~80s here) — it fetches every link and embeds each one. The
 two-layer cache makes the same run near-instant afterwards (<0.01s). `default.py` cuts cold-run
@@ -119,11 +109,10 @@ uvicorn wikimap.server.app:app --reload
 | --- | --- |
 | `GET /` | The frontend (form, graph canvas, run log) |
 | `GET /api/connect?seed=&target=` | SSE stream — one `step` event per algorithm tick |
-| `GET /api/connect?…&algorithm=greedy\|astar\|bfs\|default` | Which Connect algorithm to run (default `default`) |
-| `GET /api/connect?…&top_k=&max_depth=&max_nodes=&heuristic_weight=&hop_scale=` | Per-run knobs. All optional; out-of-range values give a 422 |
+| `GET /api/connect?…&top_k=&max_depth=` | Per-run knobs. All optional; out-of-range values give a 422 |
 | `GET /api/config` | The knobs *and their bounds*, read-only (contract 1: the frontend never hardcodes them) |
 | `GET /api/page?title=` | One page's real Wikipedia summary + URL, fetched on demand when a node is clicked |
-| `GET /api/suggest?q=` | Real Wikipedia title suggestions for the FROM/TO autocomplete dropdowns |
+| `GET /api/suggest?q=` | Real Wikipedia title suggestions for the from/to autocomplete dropdowns |
 
 Settings are per request, not global state — two browser tabs can run different `top_k` values
 without interfering. `top_k` is capped at 20 (locked decision C: uncapped expansion reaches ~27M

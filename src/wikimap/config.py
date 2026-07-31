@@ -1,8 +1,8 @@
 """Every tunable knob, in one place, as data.
 
 Contract 1: modes and algorithms read their settings from here and never hardcode.
-Depth, node caps, branch caps (K=20), beam width, heuristic weights all live here.
-Explore mode exists to watch these values reshape the graph.
+Depth and branch caps (K=20) live here. Explore mode exists to watch these values
+reshape the graph.
 
 Two kinds of thing live here, and the distinction matters:
 
@@ -47,51 +47,18 @@ TOP_K_BOUNDS = (1, 20)
 MAX_DEPTH = 6
 MAX_DEPTH_BOUNDS = (1, 12)  # 0 would forbid moving at all; 12 is well past useful
 
-# Hard ceiling on total candidate nodes emitted across a whole run. Removed 2026-07-30
-# from greedy/astar/default — see HISTORY — because it was already redundant there:
-# every node's fan-out is capped to TOP_K by decision C, so those three algorithms'
-# worst case is bounded by MAX_DEPTH * TOP_K without this. bfs is the one algorithm
-# that deliberately has NO per-node cap (it expands every link, unranked — that's what
-# makes it the ground truth), so this is now bfs's safety net alone: without it, a
-# single wide page (a TV-show hub with hundreds of links, say) can fan out forever.
-MAX_NODES = 500
-MAX_NODES_BOUNDS = (20, 5000)  # floor of 20 so at least one full tick can emit
-
-# --- A* heuristic knobs (Connect) ---------------------------------------------
-# A* scores a frontier page as f = g + W * h, where g is hops already walked and h
-# estimates hops remaining. g counts in HOPS, so h must too — raw cosine lives in
-# [0, 1] and adding it to a hop count means the heuristic can never outweigh even one
-# hop, which silently degrades A* into BFS. Hence:
-#
-#     h = HEURISTIC_HOP_SCALE * (1 - cosine(page, target))
-#
-# HEURISTIC_HOP_SCALE is "how many hops away is a page that looks totally unrelated".
-# 4.0 is grounded in published Wikipedia path lengths (~3.4-3.9 clicks between
-# arbitrary articles), not invented. PLACEHOLDER in the sense that it should be
-# calibrated against our own solved runs rather than left at the literature average.
-HEURISTIC_HOP_SCALE = 4.0
-HEURISTIC_HOP_SCALE_BOUNDS = (0.0, 20.0)
-
-# The weight W. This dial spans the whole spectrum of search behaviour, which is why
-# A* is worth building before BFS:
-#   W = 0        -> heuristic ignored, pure cost-so-far ordering == breadth-first
-#   W = 1        -> balanced A*
-#   W very large -> cost-so-far ignored == greedy best-first
-# So one algorithm plus this slider demonstrates greedy and BFS as its endpoints.
-HEURISTIC_WEIGHT = 1.0
-HEURISTIC_WEIGHT_BOUNDS = (0.0, 25.0)
-
-# --- Bidirectional search knobs (Connect BFS) ---------------------------------
+# --- Bidirectional search knobs (Connect) ---------------------------------------
 
 # How many backlinks ("what links here") to pull per page for the backward half of
-# a bidirectional search. 500 is the MediaWiki API's maximum per request, so this is
-# exactly one round trip — the point of the cap. Popular pages have six-figure
+# a bidirectional search (used by default.py; formerly also by bfs.py, removed
+# 2026-07-31 — see HISTORY). 500 is the MediaWiki API's maximum per request, so this
+# is exactly one round trip — the point of the cap. Popular pages have six-figure
 # backlink counts and an uncapped fetch would page through them forever.
 #
 # Known bias, accepted: the API returns backlinks in page-id order, NOT by relevance,
 # so capping takes an arbitrary 500 rather than the best 500. Nothing cheap fixes
 # this — ranking by relevance would require fetching all of them first, which is the
-# thing the cap exists to avoid. Recorded so the BFS results aren't over-trusted.
+# thing the cap exists to avoid.
 BACKLINK_LIMIT = 500
 
 # --- Title autocomplete (seed/target inputs) -----------------------------------
@@ -140,14 +107,6 @@ class RunParams:
 
     top_k: int = TOP_K
     max_depth: int = MAX_DEPTH
-    # bfs-only as of 2026-07-30 (see HISTORY) — greedy/astar/default no longer read
-    # this, but it stays on the shared params object rather than growing a
-    # bfs-specific settings type, same reasoning as heuristic_weight/hop_scale below.
-    max_nodes: int = MAX_NODES
-    # A*-only. Greedy ignores these, which is fine — one params object covers every
-    # Connect algorithm rather than each growing its own parallel settings type.
-    heuristic_weight: float = HEURISTIC_WEIGHT
-    hop_scale: float = HEURISTIC_HOP_SCALE
 
     def __post_init__(self) -> None:
         # object.__setattr__ is how you assign inside a frozen dataclass — normal
@@ -155,12 +114,3 @@ class RunParams:
         # runs during construction, before anyone can observe the unclamped value.
         object.__setattr__(self, "top_k", _clamp(self.top_k, TOP_K_BOUNDS))
         object.__setattr__(self, "max_depth", _clamp(self.max_depth, MAX_DEPTH_BOUNDS))
-        object.__setattr__(self, "max_nodes", _clamp(self.max_nodes, MAX_NODES_BOUNDS))
-        object.__setattr__(
-            self,
-            "heuristic_weight",
-            _clamp(self.heuristic_weight, HEURISTIC_WEIGHT_BOUNDS),
-        )
-        object.__setattr__(
-            self, "hop_scale", _clamp(self.hop_scale, HEURISTIC_HOP_SCALE_BOUNDS)
-        )

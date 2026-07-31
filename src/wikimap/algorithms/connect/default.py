@@ -6,21 +6,23 @@ alternated forward/backward expansion by comparing each side's current best
 ("israel" -> "john f kennedy"), to let one side monopolize every tick: backward's
 frontier is seeded once and its `f` never updates until it's actually picked, so a
 forward side that keeps finding decent-scoring candidates can keep winning that
-comparison indefinitely — backward can go from turn zero to never. `bfs.py`'s
-docstring already fought this exact class of bug twice (comparing raw queue length,
-then whole-frontier size, both proven wrong live) and landed on "the only safe
-comparison is depth LEVEL itself." The old default.py compared `f`, which is worse
-than either of `bfs.py`'s two already-rejected attempts — `f` isn't even monotonic
-the way queue length or frontier size at least were.
+comparison indefinitely — backward can go from turn zero to never. `bfs.py` (removed
+2026-07-31 — see HISTORY) fought this exact class of bug twice in its own history
+(comparing raw queue length, then whole-frontier size, both proven wrong live) and
+landed on "the only safe comparison is depth LEVEL itself." The old default.py
+compared `f`, which is worse than either of `bfs.py`'s two already-rejected attempts —
+`f` isn't even monotonic the way queue length or frontier size at least were.
 
 THE FIX ISN'T A BETTER COMPARISON, IT'S REMOVING THE COMPARISON. Rather than pick a
 side each tick, every tick now expands BOTH sides' ENTIRE current frontier at once:
 fetch every link (forward) / backlink (backward) reachable from wherever each side's
 wavefront currently sits, score them all, and keep each side's own top-K. There is no
-"whose turn" question left to get wrong, because there is no turn. This is `bfs.py`'s
-ply-synchronized shape (one full wavefront advances per tick), with decision C's
-top-K cosine cap layered back on to keep it cheap and heuristic-guided instead of
-exhaustive — that exhaustive, ground-truth job stays `bfs.py`'s alone.
+"whose turn" question left to get wrong, because there is no turn. This borrowed
+`bfs.py`'s ply-synchronized shape (one full wavefront advances per tick), with
+decision C's top-K cosine cap layered back on to keep it cheap and heuristic-guided
+instead of exhaustive — that exhaustive, ground-truth job was `bfs.py`'s alone, and
+no algorithm here does it anymore now that `bfs.py` is gone (removed 2026-07-31, too
+slow to be worth the guarantee — see HISTORY).
 
 PRUNING STAYS PER-SIDE, NOT POOLED — a decision, not an oversight. Forward's
 candidates are ranked by similarity to the TARGET; backward's by similarity to the
@@ -60,24 +62,28 @@ already in hand). This replaces the old default.py's `best_total`/keep-hunting-
 across-many-ticks logic, which existed to guard against a naive "stop at the very
 first contact" bug in a one-node-at-a-time model. That guard matters less once a
 whole ply's worth of candidates is already gathered and compared together before any
-decision is made — the same simplification `bfs.py` already makes (it stops firing
-further fetches the instant a ply produces a meeting, reasoning nothing later in that
+decision is made — the same simplification `bfs.py` used to make (it stopped firing
+further fetches the instant a ply produced a meeting, reasoning nothing later in that
 SAME ply can beat it). Still NOT provably optimal: cosine is a guess on both sides,
 and pruning can discard a genuinely-shorter route before it's ever explored. That is
-decision C's accepted cost, same as `astar.py` and `greedy.py`; `bfs.py` remains the
-only ground truth.
+decision C's accepted cost, same as `astar.py` and `greedy.py`. Nothing in this
+codebase can currently prove otherwise — `bfs.py` was the only ground truth, and it
+was removed 2026-07-31 (too slow relative to that guarantee; see HISTORY).
 
-`max_depth` means "per side," same as `bfs.py`, but now trivially so rather than
-independently tracked — since both sides always advance together, "per side" and
-"total ticks" are the same number by construction.
+`max_depth` used to mean "per side," matching `bfs.py`, which is now moot — there is
+no other bidirectional algorithm left to compare the convention against. Still
+trivially "per side" here, since both sides always advance together, so "per side"
+and "total ticks" are the same number by construction.
 
 NO `max_nodes` CHECK — dropped 2026-07-30, matching greedy.py/astar.py the same day
 (see HISTORY). Every ply is already capped to top-K per side, so the worst case
 across the whole run is bounded by roughly `2 * max_depth * top_k` without a separate
 node cap doing anything greedy/astar/default's own caps don't already do. `max_nodes`
-stays on `RunParams` for `bfs.py` alone, which deliberately has no per-tick cap at all
-(every link expanded, unranked — that's what makes it the ground truth) and so is the
-one algorithm that can actually run away without it.
+stays on `RunParams` for `astar.py` alone (reinstated there 2026-07-31, see HISTORY
+and config.py) — `bfs.py` used to be the other reader, deliberately having no
+per-tick cap at all (every link expanded, unranked — that's what made it the ground
+truth), but it's gone now, and astar remains the one algorithm that can run away
+without a node cap.
 """
 
 from collections.abc import Iterator
@@ -101,6 +107,7 @@ class DefaultConnect(ConnectAlgorithm):
             yield Step(
                 nodes=[Node(id=seed, score=None, depth=0)],
                 note=f"reached {target!r} in 0 hops: {seed!r}",
+                path=[seed],
             )
             return
 
@@ -218,7 +225,14 @@ class DefaultConnect(ConnectAlgorithm):
             yield Step(
                 nodes=new_nodes,
                 edges=new_edges,
-                note=f"ply {depth}: {len(forward_survivors)} fwd "
+                # "round", not "ply" — the internal reasoning in this module's
+                # docstring still says "ply" (borrowed from bfs.py's own history,
+                # accurate to how that design evolved), but that word implies
+                # one-side-at-a-time turn-taking to a reader who hasn't read the
+                # docstring, which is backwards: both sides advance in this exact
+                # same tick, together. The user-facing text says what it looks
+                # like, not where the term came from.
+                note=f"round {depth}: {len(forward_survivors)} fwd "
                 f"+ {len(backward_survivors)} bwd",
             )
 
@@ -234,7 +248,8 @@ class DefaultConnect(ConnectAlgorithm):
                 )
                 yield Step(
                     note=f"reached {target!r} in {len(path) - 1} hops "
-                    f"(met at {meeting!r}): {' -> '.join(path)}"
+                    f"(met at {meeting!r}): {' -> '.join(path)}",
+                    path=path,
                 )
                 return
 
@@ -275,9 +290,8 @@ def _reconstruct(
 ) -> list[str]:
     """Stitch the seed->meeting and meeting->target halves into one path.
 
-    Same shape as bfs.py's `_reconstruct`: the forward half is walked backwards
-    (meeting -> ... -> seed) then reversed; the backward half is already in real
-    edge-direction order and needs no reversal.
+    The forward half is walked backwards (meeting -> ... -> seed) then reversed;
+    the backward half is already in real edge-direction order and needs no reversal.
     """
     forward_half = [meeting]
     while forward_half[-1] != seed:

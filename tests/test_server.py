@@ -3,7 +3,7 @@
 All fast: `_algorithm` is monkeypatched to a fake that yields canned Steps, so no
 Wikipedia call and no model load ever happens. That substitution is exactly what the
 ABC buys us — the server only ever calls `run(seed, target)`, so anything with that
-method can stand in for GreedyConnect.
+method can stand in for DefaultConnect.
 """
 
 import json
@@ -16,7 +16,7 @@ from wikimap.server import app as app_module
 
 
 class _FakeAlgorithm:
-    """Stand-in for GreedyConnect: yields whatever Steps the test hands it."""
+    """Stand-in for DefaultConnect: yields whatever Steps the test hands it."""
 
     def __init__(self, steps: list[Step]):
         self._steps = steps
@@ -40,7 +40,8 @@ def fake_algo(monkeypatch):
 
     def _install(steps: list[Step]) -> _FakeAlgorithm:
         algo = _FakeAlgorithm(steps)
-        # `lambda *_:` because _algorithm now takes the algorithm name.
+        # `lambda *_:` because _algorithm still takes the algorithm name (just
+        # always DEFAULT_ALGORITHM now — see algorithms/connect/__init__.py).
         monkeypatch.setattr(app_module, "_algorithm", lambda *_: algo)
         return algo
 
@@ -254,7 +255,6 @@ def test_config_endpoint_reports_the_knobs(client):
     # Contract 1: the frontend reads these from config, never its own copy.
     assert body["top_k"] == config.TOP_K
     assert body["max_depth"] == config.MAX_DEPTH
-    assert body["max_nodes"] == config.MAX_NODES
 
 
 def test_connect_streams_one_event_per_step(client, fake_algo):
@@ -348,13 +348,11 @@ class TestRunParamsOverTheWire:
                 "target": "Astronomy",
                 "top_k": 5,
                 "max_depth": 2,
-                "max_nodes": 50,
             },
         )
 
         assert algo.params[0].top_k == 5
         assert algo.params[0].max_depth == 2
-        assert algo.params[0].max_nodes == 50
 
     def test_config_endpoint_publishes_bounds(self, client):
         """The frontend builds its controls from these, so they can't be absent."""
@@ -364,7 +362,6 @@ class TestRunParamsOverTheWire:
 
         assert bounds["top_k"] == list(config.TOP_K_BOUNDS)
         assert bounds["max_depth"] == list(config.MAX_DEPTH_BOUNDS)
-        assert bounds["max_nodes"] == list(config.MAX_NODES_BOUNDS)
 
     @pytest.mark.parametrize(
         "knob,value",
@@ -373,8 +370,6 @@ class TestRunParamsOverTheWire:
             ("top_k", -1),
             ("max_depth", 0),
             ("max_depth", 99),
-            ("max_nodes", 1),
-            ("max_nodes", 99999),
         ],
     )
     def test_out_of_range_knobs_are_rejected(self, client, knob, value):
@@ -383,23 +378,6 @@ class TestRunParamsOverTheWire:
             params={"seed": "Cat", "target": "Astronomy", knob: value},
         )
         assert response.status_code == 422
-
-    def test_astar_knobs_reach_the_algorithm(self, client, fake_algo):
-        algo = fake_algo([Step(note="only")])
-
-        client.get(
-            "/api/connect",
-            params={
-                "seed": "Cat",
-                "target": "Astronomy",
-                "algorithm": "astar",
-                "heuristic_weight": 0.0,
-                "hop_scale": 2.5,
-            },
-        )
-
-        assert algo.params[0].heuristic_weight == 0.0
-        assert algo.params[0].hop_scale == 2.5
 
     def test_concurrent_runs_do_not_share_settings(self, client, fake_algo):
         """The whole reason params are an argument and not module state: two runs
@@ -422,56 +400,29 @@ class TestRunParamsOverTheWire:
         assert config.TOP_K == 20
 
 
-class TestAlgorithmSelection:
-    """Step 7: the server offers more than one Connect algorithm."""
+class TestAlgorithmRegistry:
+    """The `algorithm` HTTP param and multi-algorithm selection were removed
+    2026-07-31 (greedy/astar stripped — see algorithms/connect/__init__.py and
+    HISTORY), but `_algorithm(name)` and the `ALGORITHMS` registry stay in shape
+    so a genuinely new algorithm could still drop in without restructuring this
+    module. These two tests pin what's left of that shape.
+    """
 
-    def test_config_publishes_the_registry(self, client):
+    def test_default_algorithm_is_the_only_registry_entry(self):
         from wikimap.algorithms.connect import ALGORITHMS, DEFAULT_ALGORITHM
 
-        body = client.get("/api/config").json()
+        assert list(ALGORITHMS) == [DEFAULT_ALGORITHM]
 
-        assert body["algorithms"] == sorted(ALGORITHMS)
-        assert body["default_algorithm"] == DEFAULT_ALGORITHM
-        assert "astar" in body["algorithms"]
-
-    def test_name_selects_the_algorithm(self, client, monkeypatch):
-        seen: list[str] = []
-
-        class _Recording:
-            def run(self, seed, target, params=None):
-                yield Step(note="ok")
-
-        monkeypatch.setattr(
-            app_module,
-            "_algorithm",
-            lambda name: (seen.append(name), _Recording())[1],
-        )
-
-        client.get(
-            "/api/connect",
-            params={"seed": "Cat", "target": "Astronomy", "algorithm": "astar"},
-        )
-
-        assert seen == ["astar"]
-
-    def test_unknown_algorithm_is_rejected_at_the_edge(self, client):
-        """A 422 here rather than a KeyError deep inside _algorithm."""
-        response = client.get(
-            "/api/connect",
-            params={"seed": "Cat", "target": "Astronomy", "algorithm": "nonsense"},
-        )
-        assert response.status_code == 422
-
-    def test_algorithms_share_one_set_of_caches(self, monkeypatch):
-        """Greedy and A* must not each get their own LinkCache — a fresh cache per
-        algorithm would mean re-crawling Wikipedia after switching."""
+    def test_algorithm_lookups_share_one_set_of_caches(self, monkeypatch):
+        """A fresh cache per lookup would mean re-crawling Wikipedia on every call —
+        `_algorithm` must keep handing back caches built once by `_caches()`."""
         link_cache, embed_cache = "shared-links", "shared-embeddings"
 
         # __wrapped__ is the undecorated function — calling it bypasses the lru_cache
         # so this test can't be polluted by, or pollute, other tests' cached instances.
         monkeypatch.setattr(app_module, "_caches", lambda: (link_cache, embed_cache))
-        greedy = app_module._algorithm.__wrapped__("greedy")
-        astar = app_module._algorithm.__wrapped__("astar")
+        first = app_module._algorithm.__wrapped__("default")
+        second = app_module._algorithm.__wrapped__("default")
 
-        assert greedy._link_cache is astar._link_cache is link_cache
-        assert greedy._embed_cache is astar._embed_cache is embed_cache
+        assert first._link_cache is second._link_cache is link_cache
+        assert first._embed_cache is second._embed_cache is embed_cache

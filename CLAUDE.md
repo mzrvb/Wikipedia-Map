@@ -9,6 +9,79 @@ Update it alongside this file — see [Working practice](#working-practice).
 
 ## STATUS
 
+**Frontend polish pass 2026-07-31 — winning path highlighted, five colour-by modes, a
+transit-map run log, light theme, and a reworded run form.** Five separate, mostly
+frontend-only changes made in one session, landing on top of the `default.py`-only state
+below:
+
+- **`Step` gained an optional `path` field** (`graph/contracts.py`) — the only Python-side
+  change in this pass, and a real contract-2 addition, not a frontend trick: `path: list[str]
+  | None = None`, populated only on the terminal success `Step` in `default.py` (both the
+  `seed == target` case and the normal meeting-in-the-middle case), using the same `path`
+  list already built for the human-readable note. `None` everywhere else, including
+  exhaustion — never `[]`. The frontend's `highlightPath()` (`app.js`) uses it to amber-border
+  every node on the winning route and thicken/recolour its edges, without regexing the
+  prose note. 76 tests still green (two existing tests gained a `.path == [...]` assertion;
+  no new test functions, no existing assertion removed).
+- **Five `colour by` modes, not two.** `score`/`depth` already existed; added `band`
+  (score bucketed into 4 fixed colours instead of a gradient — trades precision for
+  scannability), `side` (flat blue/orange by sign of `depth` — answers "which of
+  `default.py`'s two frontiers found this," which depth's per-hop gradient blurs), and
+  `recency` (colour by which tick a node was FIRST discovered in, tracked client-side via a
+  `tickCounter`/`maxTick` pair reset per run/replay — distinct from depth, since on a wide
+  round tick order and hop count can diverge). A separate **"Dim off-path" checkbox**
+  (independent of colour-by) mutes every node/edge not on the winning route to 15% opacity
+  once one exists, keyed off the same `onPath` DataSet flag `highlightPath()` sets — re-applied
+  from `applyDisplay()` too, so toggling it after a run finishes still works. All frontend-only,
+  no `config.py`/contract/server change.
+- **The run log is now styled as a transit-map line, not a scrolling text dump.** Each
+  entry is a "stop" — a dot connected to the next by a rail (`.entry::after` in `style.css`,
+  pure CSS, no SVG) — with dot shape/colour keyed to what kind of stop it is: green terminus
+  for the start, amber glowing terminus for the destination (checked via the new `step.path`
+  field, not string-matching the note), a two-tone blue/orange dot for an ordinary round
+  (matching `side` colour-by's palette — a round always advances both directions at once, so
+  the dot always shows both), and hollow rings for status chatter / "no route found." Log
+  order flipped from newest-on-top (`prepend`) to chronological (`append` + auto-scroll-to-
+  bottom), since a route metaphor only reads correctly top-to-bottom in travel order.
+- **"ply" removed from everything user-visible.** Renamed to "round" in the `Step` note
+  `default.py` emits (`"round {depth}: …"`) and in the matching CSS class / JS classifier —
+  a direct, informed user correction: the word (and, worse, an initial chess-ply analogy while
+  explaining it) implied the two search directions take turns, which is backwards — a round is
+  both frontiers advancing in the exact same tick, simultaneously, no ordering between them.
+  `default.py`'s own module docstring and code comments still say "ply" deliberately — that's
+  the historically accurate term inherited from `bfs.py`'s design lineage, a different audience
+  (a future reader of the algorithm's reasoning) than the running app's user-facing text.
+- **Light theme is now the default.** Every colour lives in `style.css`'s `:root` CSS
+  variables (`--bg`/--panel`/`--line`/`--text`/`--muted`/`--accent`), flipped from a dark to a
+  light palette in one edit — plus two hardcoded canvas colours in `app.js` that CSS can't
+  reach (vis-network draws to `<canvas>`): node label text and the default edge line colour.
+- **Run form reworded**: separate "From"/"To" labelled fields replaced with one flowing
+  `Connect ____ and ____` phrase (`.connect-phrase` in `index.html`/`style.css`). Each input
+  lost its own `<label>` wrapper, so each carries an `aria-label` (`"From page"`/`"To page"`)
+  instead, to keep an accessible name.
+
+Manual verification note: none of the above was click-tested in a live browser by the agent
+that built it this session (no `claude-in-chrome` tooling) — `node --check`, the fast suite,
+and `ruff check` all passed, but visual confirmation is owed, same caveat as the node-click
+panel and per-node sizing before it.
+
+**`greedy.py`/`astar.py` stripped 2026-07-31 — `default.py` is now the ONLY Connect
+algorithm.** A direct, informed user call made while comparing wikimap against
+[jwngr/sdow](https://github.com/jwngr/sdow) (which precomputes the whole link graph offline and
+answers with plain BFS — a different, easier problem than wikimap's live crawl). Repeated live
+testing (see the 2026-07-30 `LaMelo Ball → Spanish Revolution` entry in HISTORY) showed `greedy`
+dead-ending, `astar` plateauing for 7+ minutes, and `default` solving the same pair in 3.37s —
+maintaining three algorithms was mostly maintaining two failure demonstrations. `ALGORITHMS` in
+`algorithms/connect/__init__.py` is now `{"default": DefaultConnect}`; the registry/lookup shape
+was deliberately kept (not collapsed to a bare call) so a genuinely new algorithm could still drop
+in later. `config.py` lost `MAX_NODES`, `HEURISTIC_WEIGHT`, `HEURISTIC_HOP_SCALE` and their bounds
+(all astar-only since `bfs.py`'s removal the same day); `RunParams` lost the matching fields.
+`/api/connect` lost `algorithm=`/`max_nodes=`/`heuristic_weight=`/`hop_scale=`; `/api/config`
+stopped publishing the algorithm registry and those knobs' bounds. Frontend lost the Algorithm
+picker and the three now-dead Search-panel rows, plus the per-algorithm dimming logic that used
+to grey them out. 76 fast tests green, `ruff check` clean. Full reasoning and the exact
+before/after in HISTORY.
+
 **Roadmap step 1 (data layer) — done.** `wiki/client.py` (ns0 filtering, UA, retry) and
 `wiki/cache.py` (memory → disk two-layer cache) are implemented and tested — 7 tests green,
 `ruff check` clean. Venv exists at `.venv`, deps installed.
@@ -66,7 +139,8 @@ and are small integers (≤ `max_depth`), so a page can reopen only a handful of
 `get_links` on an already-seen title is a cache hit, not a new fetch. This does NOT make A*
 provably optimal — the run still stops at the *first* pop of the target, and nothing rules out
 an even cheaper route still sitting undiscovered deeper in the frontier; proving that needs an
-admissible heuristic or exhaustive search, which is `bfs.py`'s job. What it fixes is the
+admissible heuristic or exhaustive search, which was `bfs.py`'s job until it was removed
+2026-07-31 (see HISTORY) — nothing in this codebase does that check anymore. What it fixes is the
 specific, provable failure mode: every path A* reports is now built from the best per-page cost
 the search ever found, not whichever arrived first. Repro'd with a worked fake-graph test
 (`test_a_cheaper_route_to_an_already_expanded_node_still_wins`) before the fix, confirmed fixed
@@ -111,9 +185,10 @@ each new Connect algorithm proves the shared pieces before Explore inherits them
    warm caches survive and concurrent runs can't stomp each other. Bounds are published via
    `/api/config` and the frontend's controls are built from them. `TOP_K = 20` is a **ceiling, not a
    fixed value** (`TOP_K_BOUNDS`); decision C locks the mechanism and the maximum.
-2. ~~**`connect/astar.py`**~~ **Done 2026-07-26.** ~~**`connect/bfs.py`**~~ **Done 2026-07-28** —
-   see HISTORY for why BFS is neither cheap nor the ground-truth baseline the brief implies, and for
-   the ply-synchronization bug it took two attempts to get right.
+2. ~~**`connect/astar.py`**~~ **Done 2026-07-26.** ~~**`connect/bfs.py`**~~ **Done 2026-07-28,
+   REMOVED 2026-07-31** — see HISTORY for why BFS was neither cheap nor, in the end, worth keeping
+   as the ground-truth baseline the brief implies it should be, and for the ply-synchronization bug
+   it took two attempts to get right before it was cut.
 3. **Explore** (`explore/bfs.py`, `explore/beam.py`) only once Connect is complete.
 
 **Where a knob lives — `config.py` vs the frontend.** Contract 1 covers *search* knobs: anything that
@@ -158,49 +233,16 @@ agent that built this (a background session with no browser attached) — the ba
 directly (`curl /api/page?title=Cat`, and a 404 case), but visually confirming the panel opens is
 still owed before calling this fully proven end-to-end.
 
-**`connect/bfs.py` — done (2026-07-28).** Bidirectional, uncapped BFS — the ground-truth check on
-greedy/A*'s shortest-path claims. Registered in `ALGORITHMS`, so it appears in the frontend's
-algorithm picker automatically (no frontend changes needed at all). Never computes an embedding
-(`Node.score` is always `None`); forward nodes carry `+hops-from-seed`, backward nodes carry
-`-hops-from-target` so "colour by depth" visually separates the two searches meeting in the middle.
-
-⚠️ **Took two attempts to get the direction-selection rule right — read this before touching the
-turn logic.** Bidirectional BFS is only a ground truth if it processes nodes in true non-decreasing
-depth order across BOTH sides combined; get that wrong and it can report a longer route than a
-heuristic search already found, which defeats the entire point of building it. Attempt 1 compared
-raw queue *length* after partial draining — wrong, let one side's queue race ahead in depth while
-the other's shallower frontier waited. Attempt 2 compared full-frontier *size* between plies — still
-wrong, a side with a small frontier (e.g. a thin one-link-per-page chain) can keep "winning" that
-comparison and race ahead in depth indefinitely. **The only safe comparison is depth LEVEL itself**
-— expand whichever side's current frontier sits at the lower depth number, full ply at a time. Both
-bugs were caught by the same live test (`Mitsubishi → Kanye West`): attempt 1 returned 4 hops when
-A* had already proven 3 exist; the depth-level fix returned 3, matching. Neither bug was caught by
-the unit tests, because the fakes used small graphs where the bug either didn't trigger or produced
-an answer that was merely *not the specific node* a test asserted on (fixed to assert path/hop-count
-only, not which node the searches met at, since that's a genuine implementation detail).
-
-102 fast tests green (was 90, +12), `ruff check` clean, no existing assertion changed.
-
-**`bfs.py` `max_nodes` overshoot fix — done (2026-07-29).** The cap was only checked once per
-whole ply (a ply has no size limit of its own, unlike greedy/astar's `top_k`-bounded ticks) — a
-repro fanning out 10×10 asked for `max_nodes=20`, got 111. Fixed by checking after every node's own
-fan-out instead, plus an early `break` once the two searches meet (stop wasting fetches on the rest
-of that ply — nothing later in it can be shorter). See HISTORY for why pruning `bfs`'s branching to
-fix this was considered and rejected (it would cost `bfs` the "ground truth" guarantee it exists
-for), and for the two real, not-yet-built levers that don't have that problem (concurrent fetch
-within a ply; batching, rejected for now since it can't help the backlinks half at all). 104 fast
-tests green (was 102, +2), `ruff check` clean, no existing assertion changed.
-
-**Review pass on `bfs.py` — done (2026-07-29).** A stale test docstring
-(`test_backward_search_finds_a_meeting_forward_alone_would_take_longer_to_reach`) described its own
-outcome using the frontier-*size* rule that HISTORY documents as the second live-caught bug, not
-the depth-*level* rule that actually shipped — fixed to describe reality. Separately, `max_depth`
-was applying independently to each of `bfs`'s two frontiers with no comment on the consequence:
-greedy/A* treat it as one walk's cap (max path length); `bfs` treats it as each side's cap (max
-path length `2 * max_depth`). **Decided, not changed:** keep it per-side — halving it would make
-`bfs` unable to certify depths greedy/A* are allowed to search to, breaking its job as their
-ground-truth checker. Now stated explicitly in the module docstring instead of left implicit. No
-code behavior changed, no existing assertion changed.
+**`connect/bfs.py` — built 2026-07-28, REMOVED 2026-07-31.** Was bidirectional, uncapped BFS — the
+ground-truth check on greedy/A*'s shortest-path claims (never computed an embedding; forward nodes
+carried `+hops-from-seed`, backward `-hops-from-target`). Its build took two attempts to get the
+direction-selection rule right (comparing depth LEVEL, not queue length or frontier size — both
+tried and proven wrong live), and later got a `max_nodes` overshoot fix and a docstring-accuracy
+review pass. Removed as a direct, informed user call — too slow to be worth the ground-truth
+guarantee it provided, after being shown that capping it into a beam search would just duplicate
+`default.py`. **The full build/bug/removal narrative, including the direction-selection saga and
+what removing it costs the codebase, lives in HISTORY — read it before adding anything back in
+this shape.**
 
 **Frontend — auto-fit camera + disabled Connect/Explore toggle (2026-07-29).** `scheduleFit()`
 in `app.js` calls vis-network's `network.fit()` so the camera keeps the whole graph in view as it
@@ -245,7 +287,9 @@ removing it. Reopening (astar.py's fix, inherited by the original default.py) is
 a simplification, not a lost feature: depth only ever increases by one, together, on both sides,
 so first discovery is already the best depth this design's pruning can produce. `heuristic_weight`/
 `hop_scale` are no longer read — see module docstring. Still NOT provably optimal (cosine is a
-guess on both sides, `bfs.py` remains the only ground truth). 114 fast tests green (11 in
+guess on both sides; `bfs.py` was the only ground truth for this, until it was removed 2026-07-31 —
+see HISTORY — leaving no algorithm in this codebase that can currently make that check). 114 fast
+tests green (11 in
 `test_default.py`, including a direct regression test proving backward now expands every tick
 regardless of how much better forward's candidates look), `ruff check` clean. Full reasoning in
 HISTORY.
@@ -284,6 +328,12 @@ Does not fix the `Friends`/`bfs` case itself — that's still capped, by design;
 HISTORY. Five node-cap tests removed (behavior they tested no longer exists by
 design). 114 tests green, `ruff check` clean.
 
+**Superseded 2026-07-31, in two steps (see HISTORY for both):** `astar.py` turned out to have the
+same unbounded-fan-out problem `bfs` had, for a different structural reason (its `while frontier`
+loop has no ply structure limiting distinct-node pops), so `max_nodes` was reinstated for `astar`
+alone. Then `bfs.py` itself was removed entirely (too slow to be worth the ground-truth guarantee
+it provided). `max_nodes` is now astar-only.
+
 **`default.py` per-tick cost cut: concurrent fetch + batched embedding — done (2026-07-30).**
 Two separate costs, two separate fixes. **Fetch:** the ply loop's sequential
 `for parent in frontier: get_links(parent)` became a `ThreadPoolExecutor` submitting every
@@ -298,6 +348,17 @@ is the only caller so far; greedy/astar still embed one-at-a-time. Neither chang
 ranking, pruning, or termination. 122 tests green, `ruff check` clean. Full reasoning in
 HISTORY.
 
+**Frontend — Enter/Run autocorrects seed/target to a real title — done (2026-07-31).**
+`app.js`'s `submit` handler now resolves both fields through `/api/suggest` (`resolveTitle()`,
+reusing the same endpoint autocomplete's dropdown already calls) before a run starts, falling
+back to the typed text if the search returns nothing. Fixes a real correctness gap: the
+algorithms compare `seed`/`target` to Wikipedia link titles with exact string equality, so a
+hand-typed `astronomy` never matched `Astronomy` even after walking through that exact page —
+autocomplete only helped if the user clicked a suggestion, not on Enter/Run. Fixed frontend-side
+(reusing `/api/suggest`) rather than loosening the comparison inside `greedy.py`/`default.py`,
+to avoid a second fix duplicated across two algorithm modules. Frontend-only, no Python touched,
+122 tests unaffected. Full reasoning in HISTORY.
+
 **Frontend — per-step and total-run timing benchmarks — done (2026-07-30).** Every Step's log
 line now shows `[+123ms · 4.56s total] <note>`; run termination (done / Stop / dropped
 connection) logs the total. Measured entirely client-side off SSE arrival timestamps
@@ -308,8 +369,40 @@ timings (`recordedTimings`, parallel to the existing `recorded` Step array), not
 replay's own fixed 600ms animation clock. Frontend-only, no Python touched, 122 tests
 unaffected. Full reasoning in HISTORY.
 
-**Live-tested speed/efficiency across all four algorithms on hard pairs — done (2026-07-30).**
-No code changed, observational only. Headline result on a genuinely hard cross-domain pair
+**Review pass — `embed.py` cache-anchor gap fixed, `greedy.py` seed==target silence fixed
+(2026-07-31).** Two findings from a backend review. **1.** `EmbeddingCache.DEFAULT_DATA_DIR` was
+still `Path("data/embeddings")` — a bare relative path, resolving against whatever directory the
+process happened to be launched from. `wiki/cache.py`'s `LinkCache` got the equivalent fix in the
+2026-07-27 review pass (`Path(__file__).resolve().parents[3]`); this sibling cache never did,
+because every `test_embed.py` test already passed `data_dir=tmp_path` explicitly, the same blind
+spot that let the original bug ship. Fixed the same way (`parents[2]`, one level shallower since
+`embed.py` sits directly in `wikimap/` rather than a subpackage), with a new regression test that
+computes the expected path independently rather than importing `embed`'s own constant, so it
+can't pass by sharing a bug with the code it's checking. **2.** `GreedyConnect.run` had no
+seed==target special case — `astar`/`default`/`bfs` all emit an explicit "reached in 0 hops" note
+for it, greedy just returned after the generic start Step with nothing announcing success. Fixed
+to match its siblings; the one existing test asserting the old silent behavior was updated (not
+new — this is an intentional behavior change, not a regression). Also flagged, not yet fixed: the
+2026-07-30 `max_nodes` removal (below) reasoned `MAX_DEPTH * TOP_K` bounds `astar`'s worst case
+the same way it bounds `greedy`/`default` — true for those two (one path; one pooled top-K per
+ply) but not for `astar`, whose `while frontier:` loop can expand every distinct node discovered
+below `max_depth`, not one per level. This likely explains the astar 7+-minute plateau recorded
+below rather than being a separate phenomenon; the capping fix proposed here was implemented the
+same day (`max_nodes` reinstated for `astar` — see config.py and astar.py, and the entry below).
+123 tests green (was 122, +1), `ruff check` clean.
+
+**`connect/bfs.py` removed — done (2026-07-31).** Deleted along with its test file and registry
+entry; `greedy`/`astar`/`default` are the three remaining Connect algorithms. A direct, informed
+user call, made after being shown that (a) converting `bfs.py` into a beam search for speed would
+remove the codebase's only ground-truth shortest-path checker, and (b) the result would almost
+exactly duplicate `default.py`, which already is a bidirectional beam search. `max_nodes` (the
+other thing `bfs.py` owned) survives, now `astar`-only. Every doc/comment across the codebase that
+named `bfs.py` as live code was swept in the same pass. Full reasoning, including what this costs
+the codebase (no algorithm can currently verify another's shortest-path claim), in HISTORY.
+
+**Live-tested speed/efficiency across all four algorithms on hard pairs — done (2026-07-30,
+before `bfs` was removed).** No code changed, observational only. Headline result on a genuinely
+hard cross-domain pair
 (`LaMelo Ball → Spanish Revolution`): `greedy` failed (wrong-page dead end at `max_depth`),
 `astar` never finished (7+ min, trapped in a "Spanish [sports league]" plateau — a distinct
 failure mode from greedy's drift), `default` solved it in 3.37s via bidirectional search

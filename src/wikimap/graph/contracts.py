@@ -69,11 +69,21 @@ class Step:
 
     Note: frozen freezes the *fields*, not the list contents — you still shouldn't mutate
     a Step's `nodes` list after construction. Build the lists first, then wrap them.
+
+    `path` is optional and only ever set on the terminal success Step (seed -> ... ->
+    target, in walk order). Every algorithm already computes this to write the
+    human-readable "reached ... via A -> B -> C" note, so exposing it as structured data
+    too costs nothing new to compute — it just stops the frontend from having to regex
+    a log line meant for humans to highlight the winning route. `None` (not `[]`) on
+    every other Step, including the exhaustion case, so the frontend can tell "no path
+    found yet" apart from "found an empty path" (which can't happen, but the type says
+    so either way) with a single `if (step.path)` check.
     """
 
     nodes: list[Node] = field(default_factory=list)
     edges: list[Edge] = field(default_factory=list)
     note: str = ""
+    path: list[str] | None = None
 
 
 @dataclass(frozen=True)

@@ -37,34 +37,44 @@
         <button type="button" class="active" aria-pressed="true">Connect</button>
         <button type="button" disabled title="Not built yet" aria-pressed="false">Explore</button>
       </div>
-      <span class="mode">Connect — greedy</span>
+      <span class="mode">Connect</span>
     </header>
 
     <form id="run-form">
-      <label>
-        From
-        <!-- .input-wrap gives the suggestion list a positioned ancestor sized to
-             the input alone (not the whole label, which also contains "From"/"To"
-             text) — see style.css. autocomplete="off" so the browser's own
-             address-bar-style suggestions don't fight ours for the same box. -->
+      <!-- One flowing phrase instead of two stacked From/To fields. Each input still
+           needs its own accessible name since it's no longer inside a <label> of its
+           own — aria-label carries that instead of visible text. .input-wrap gives
+           the suggestion list a positioned ancestor sized to the input alone (not the
+           whole phrase) — see style.css. autocomplete="off" so the browser's own
+           address-bar-style suggestions don't fight ours for the same box. -->
+      <div class="connect-phrase">
+        <span>Connect</span>
         <div class="input-wrap">
-          <input id="seed" name="seed" value="Cat" required maxlength="200" autocomplete="off" />
+          <input
+            id="seed"
+            name="seed"
+            value="Cat"
+            required
+            maxlength="200"
+            autocomplete="off"
+            aria-label="From page"
+          />
           <ul id="seed-suggestions" class="suggestions" hidden></ul>
         </div>
-      </label>
-      <label>
-        To
+        <span>and</span>
         <div class="input-wrap">
-          <input id="target" name="target" value="Astronomy" required maxlength="200" autocomplete="off" />
+          <input
+            id="target"
+            name="target"
+            value="Astronomy"
+            required
+            maxlength="200"
+            autocomplete="off"
+            aria-label="To page"
+          />
           <ul id="target-suggestions" class="suggestions" hidden></ul>
         </div>
-      </label>
-      <label>
-        Algorithm
-        <!-- Options are filled in from /api/config's registry, not listed here, so
-             adding an algorithm server-side needs no frontend change. -->
-        <select id="algorithm" name="algorithm" disabled></select>
-      </label>
+      </div>
       <button id="run" type="submit">Run</button>
       <button id="stop" type="button" disabled>Stop</button>
       <button id="toggle-panel" type="button" class="ghost">Settings</button>
@@ -96,31 +106,6 @@
               <span>max depth</span>
               <input id="max_depth" name="max_depth" type="number" disabled />
               <small id="max_depth-range"></small>
-            </label>
-            <!-- bfs-only (see config.py, 2026-07-30): the other three algorithms cap
-                 each node's fan-out to top-K already, so max_depth * top-K already
-                 bounds them and this cap is redundant there. bfs has no such per-node
-                 cap by design (it's the uncapped ground truth), so this is its
-                 backstop against a single huge-fanout page (a TV-show hub, say)
-                 expanding forever. -->
-            <label class="nodecap">
-              <span>max nodes</span>
-              <input id="max_nodes" name="max_nodes" type="number" disabled />
-              <small id="max_nodes-range"></small>
-            </label>
-            <!-- Used by astar AND default (bidirectional A* — see default.py); dimmed
-                 for greedy/bfs, which ignore both. W=0 orders purely by hops
-                 (breadth-first); W very large ignores hops (greedy). -->
-            <label class="weighted">
-              <span>weight W</span>
-              <input id="heuristic_weight" name="heuristic_weight" type="number" step="0.5" disabled />
-              <small id="heuristic_weight-range"></small>
-            </label>
-            <!-- Converts cosine into hops so g and h share a unit — see astar.py. -->
-            <label class="weighted">
-              <span>hop scale</span>
-              <input id="hop_scale" name="hop_scale" type="number" step="0.5" disabled />
-              <small id="hop_scale-range"></small>
             </label>
             <button id="reset-knobs" type="button" disabled>Reset search knobs</button>
           </details>
@@ -165,12 +150,25 @@
             </label>
             <label class="row">
               <span>Colour by</span>
-              <!-- Only possible because Steps carry real data: every node knows its
-                   cosine score AND its depth from the seed. -->
+              <!-- score/depth are only possible because Steps carry real data: every
+                   node knows its cosine score AND its depth from the seed. side and
+                   recency are derived client-side (side: sign of depth: which of
+                   default.py's forward/backward frontiers found this node; recency:
+                   the tick it was first discovered in, tracked in app.js). band is
+                   score again, bucketed into 4 named ranges instead of a gradient. -->
               <select id="d-colorBy" data-display>
-                <option value="score">similarity</option>
+                <option value="score">similarity (gradient)</option>
+                <option value="band">similarity (bands)</option>
                 <option value="depth">depth</option>
+                <option value="side">side (fwd/bwd)</option>
+                <option value="recency">discovery order</option>
               </select>
+            </label>
+            <label class="row">
+              <span>Dim off-path</span>
+              <!-- Independent of "Colour by" above: once a route is found, mutes
+                   everything NOT on it instead of picking a different scheme. -->
+              <input id="d-dimOffPath" type="checkbox" data-display />
             </label>
             <button id="replay" type="button" disabled>Replay build</button>
           </details>

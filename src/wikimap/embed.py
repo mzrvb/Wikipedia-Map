@@ -17,7 +17,17 @@ import numpy as np
 
 from wikimap.config import EMBEDDING_MODEL
 
-DEFAULT_DATA_DIR = Path("data/embeddings")
+# Anchored to the project root, NOT left as a relative path — same fix, same
+# reasoning as wiki/cache.py's DEFAULT_DATA_DIR: a relative Path resolves against
+# whatever directory the process happened to be launched from, so starting uvicorn
+# from anywhere but the repo root would silently miss the warm embedding cache and
+# recompute every embedding (the model forward pass, the expensive part) from cold.
+#
+# parents[] walks up from this file: [0] wikimap/ -> [1] src/ -> [2] root. One level
+# shallower than wiki/cache.py's parents[3] because embed.py sits directly in
+# wikimap/, not in a subpackage like wiki/.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_DIR = _PROJECT_ROOT / "data" / "embeddings"
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -110,8 +120,8 @@ class EmbeddingCache:
 
         Same memory -> disk -> compute chain as `embed`, but cache misses are
         collected and sent to `Embedder.embed_batch` as one model call instead of
-        one `encode()` per title — the dominant per-tick cost for default.py/
-        greedy.py/astar.py, which each score an entire ply's worth of candidates.
+        one `encode()` per title — the dominant per-tick cost for default.py,
+        which scores an entire ply's worth of candidates at once.
         """
         anchor_vector = self.embed(anchor)
 

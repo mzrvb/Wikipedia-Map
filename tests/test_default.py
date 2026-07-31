@@ -1,8 +1,7 @@
 """Bidirectional beam search — the default algorithm.
 
 All fast: fake caches supply canned links, backlinks, and similarity scores, so no
-network and no model ever load. Same fake shapes as test_astar.py/test_bfs.py, since
-this algorithm is a genuine combination of both.
+network and no model ever load.
 """
 
 from wikimap.algorithms.connect.default import DefaultConnect
@@ -27,8 +26,8 @@ class _FakeLinkCache:
 
 
 class _FakeEmbedCache:
-    """`similarity(x, y)` ignores `y` and looks `x` up in a title -> score table —
-    same simplification test_astar.py makes. A page is maximally similar to itself."""
+    """`similarity(x, y)` ignores `y` and looks `x` up in a title -> score table.
+    A page is maximally similar to itself."""
 
     def __init__(self, scores: dict[str, float]):
         self._scores = scores
@@ -64,12 +63,14 @@ class TestReachesTarget:
 
         assert "reached 'D'" in steps[-1].note
         assert "A -> B -> D" in steps[-1].note
+        assert steps[-1].path == ["A", "B", "D"]
 
     def test_seed_equal_to_target_terminates_immediately(self):
         steps = _run({}, {}, {}, seed="A", target="A")
 
         assert "reached 'A' in 0 hops" in steps[-1].note
         assert len(steps) == 1
+        assert steps[-1].path == ["A"]
 
     def test_reports_exhaustion_when_no_route_exists(self):
         links = {"A": ["B"], "B": []}
@@ -78,6 +79,7 @@ class TestReachesTarget:
         steps = _run(links, {}, scores, seed="A", target="Unreachable")
 
         assert "exhausted" in steps[-1].note
+        assert steps[-1].path is None
 
 
 class TestBidirectionality:

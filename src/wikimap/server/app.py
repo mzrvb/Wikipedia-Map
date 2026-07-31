@@ -59,8 +59,8 @@ def _caches():
     USER_AGENT and load an ~80MB model just to run the tests.
 
     Split out from `_algorithm` so that every algorithm shares ONE set of caches. If
-    the caches were built inside `_algorithm`, switching greedy -> astar would hand
-    the new algorithm a cold cache.
+    the caches were built inside `_algorithm`, a future second algorithm would start
+    with a cold cache instead of the warm one this run already built.
     """
     from wikimap.embed import Embedder, EmbeddingCache
     from wikimap.wiki.cache import LinkCache
@@ -89,10 +89,9 @@ def _wiki_client() -> WikiClient:
 def _algorithm(name: str = DEFAULT_ALGORITHM) -> ConnectAlgorithm:
     """Build (once per name) the shared algorithm instance for `name`.
 
-    `lru_cache` keyed by the name: one GreedyConnect, one AStarConnect, each reused
-    across requests. Unbounded maxsize is safe because the key space is the fixed
-    ALGORITHMS registry, not user input — the route validates the name before it
-    reaches here.
+    `lru_cache` keyed by the name — as of 2026-07-31 that's just `DefaultConnect`,
+    since greedy/astar were stripped (see `algorithms/connect/__init__.py`), but the
+    registry indirection stays so a genuinely new algorithm can still drop in later.
 
     Annotated as the ABC, not a concrete class: everything below relies only on
     `run`, which is exactly what the base class guarantees. That is what lets a new
@@ -117,7 +116,6 @@ def _stream(
     seed: str,
     target: str,
     params: RunParams,
-    algorithm: str = DEFAULT_ALGORITHM,
 ) -> Iterator[str]:
     """Turn the algorithm's Step stream into SSE frames, one per tick.
 
@@ -130,10 +128,14 @@ def _stream(
     `params` is threaded straight through to `run()` rather than stashed anywhere.
     This function is called once per request, so the settings live in this generator's
     own frame — two concurrent runs cannot see each other's.
+
+    No `algorithm` argument as of 2026-07-31: there's only one Connect algorithm now
+    (see `algorithms/connect/__init__.py`), so picking one is no longer a per-request
+    decision worth threading through the whole call chain.
     """
-    yield _sse("status", {"message": f"Searching {seed} → {target} ({algorithm})…"})
+    yield _sse("status", {"message": f"Searching {seed} → {target}…"})
     try:
-        algo = _algorithm(algorithm)
+        algo = _algorithm(DEFAULT_ALGORITHM)
         for step in algo.run(seed, target, params):
             # asdict() walks the frozen dataclass (and its nested Node/Edge lists)
             # into plain dicts — json.dumps can't serialize a dataclass directly.
@@ -154,22 +156,12 @@ def read_config() -> dict:
     return {
         "top_k": config.TOP_K,
         "max_depth": config.MAX_DEPTH,
-        "max_nodes": config.MAX_NODES,
-        "heuristic_weight": config.HEURISTIC_WEIGHT,
-        "hop_scale": config.HEURISTIC_HOP_SCALE,
         "embedding_model": config.EMBEDDING_MODEL,
-        # The registry, so the frontend's algorithm picker is built from what the
-        # server actually offers rather than a hardcoded list that could drift.
-        "algorithms": sorted(ALGORITHMS),
-        "default_algorithm": DEFAULT_ALGORITHM,
         # Bounds so the frontend can build controls without hardcoding ranges —
         # contract 1 applies to the *limits* as much as to the values.
         "bounds": {
             "top_k": list(config.TOP_K_BOUNDS),
             "max_depth": list(config.MAX_DEPTH_BOUNDS),
-            "max_nodes": list(config.MAX_NODES_BOUNDS),
-            "heuristic_weight": list(config.HEURISTIC_WEIGHT_BOUNDS),
-            "hop_scale": list(config.HEURISTIC_HOP_SCALE_BOUNDS),
         },
     }
 
@@ -184,22 +176,6 @@ def connect(
     max_depth: int = Query(
         config.MAX_DEPTH, ge=config.MAX_DEPTH_BOUNDS[0], le=config.MAX_DEPTH_BOUNDS[1]
     ),
-    max_nodes: int = Query(
-        config.MAX_NODES, ge=config.MAX_NODES_BOUNDS[0], le=config.MAX_NODES_BOUNDS[1]
-    ),
-    heuristic_weight: float = Query(
-        config.HEURISTIC_WEIGHT,
-        ge=config.HEURISTIC_WEIGHT_BOUNDS[0],
-        le=config.HEURISTIC_WEIGHT_BOUNDS[1],
-    ),
-    hop_scale: float = Query(
-        config.HEURISTIC_HOP_SCALE,
-        ge=config.HEURISTIC_HOP_SCALE_BOUNDS[0],
-        le=config.HEURISTIC_HOP_SCALE_BOUNDS[1],
-    ),
-    # Literal-style validation via the registry: an unknown name is a 422 here rather
-    # than a KeyError deep inside _algorithm.
-    algorithm: str = Query(DEFAULT_ALGORITHM, pattern=f"^({'|'.join(sorted(ALGORITHMS))})$"),
 ) -> StreamingResponse:
     """Stream a Connect run as Server-Sent Events.
 
@@ -211,16 +187,14 @@ def connect(
     `?seed=&target=` URL still works. Range checking is FastAPI's job via `ge`/`le` —
     out-of-range values get a 422 here, at the edge, so the algorithm never has to
     know that user input exists. The bounds themselves come from config, not literals.
+
+    No `algorithm` param as of 2026-07-31 — see `_stream`'s docstring; there's only
+    one Connect algorithm left, so the old `?algorithm=` query arg is gone rather
+    than kept around as a single-valued no-op.
     """
-    params = RunParams( # defined parameters
-        top_k=top_k,
-        max_depth=max_depth,
-        max_nodes=max_nodes,
-        heuristic_weight=heuristic_weight,
-        hop_scale=hop_scale,
-    )
+    params = RunParams(top_k=top_k, max_depth=max_depth)
     return StreamingResponse(
-        _stream(seed, target, params, algorithm),
+        _stream(seed, target, params),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
