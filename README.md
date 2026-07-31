@@ -12,18 +12,26 @@ Both modes build the graph live on screen as the search runs.
 
 ## Status
 
-**Working MVP with live settings and three algorithms — Connect is feature-complete.** Run a search
-in the browser, watch the graph build live, switch between greedy / A* / bidirectional BFS, tune
-the search knobs, and reshape the rendering (node size, forces, colour-by) from a settings panel.
-Click any node (mid-run or after) to open a panel with its real Wikipedia summary and a link to the
-article. 104 fast tests green, `ruff check` clean.
+**Working MVP with live settings and four algorithms — Connect is feature-complete.** Run a search
+in the browser, watch the graph build live with the camera auto-fitting to it, switch between
+greedy / A* / bidirectional BFS / default (bidirectional beam search), tune the search knobs, and
+reshape the rendering (node size — flat, or by score/depth — forces, colour-by) from a settings
+panel. A Connect/Explore toggle sits in the header — Explore is disabled until that mode is
+actually built. Click any node (mid-run or after) to open a panel with its real Wikipedia summary
+and a link to the article. FROM/TO fields autocomplete against real Wikipedia titles as you type.
+The run log shows per-step and total-run timing (`[+123ms · 4.56s total]`), measured in the
+browser. 122 fast tests green, `ruff check` clean.
 
 Settings come in two kinds, and the split is deliberate:
 
 | | Owned by | Changes | Stored in |
 | --- | --- | --- | --- |
-| **Search** — top-K, max depth, max nodes, weight W, hop scale | `config.py` | what the algorithm does | server; sent as query params |
+| **Search** — top-K, max depth, weight W, hop scale | `config.py` | what the algorithm does | server; sent as query params |
 | **Display / Forces** — node size, arrows, physics, colour-by | the browser | how the graph is drawn | `localStorage` |
+
+`max_nodes` is a search knob too, but as of 2026-07-30 it's read by `bfs` alone — greedy/astar/
+default are already bounded by `top-K` per tick, so a separate node cap never did real work for
+them (see `HISTORY.md`).
 
 A physics slider can never reach the algorithm, so it never goes near `config.py`. The rule:
 *changes the search → `config.py`; changes the picture → frontend.*
@@ -38,6 +46,7 @@ A physics slider can never reach the algorithm, so it never goes near `config.py
 | 6 | Per-run params — knobs travel as `run()` arguments, wired to UI controls | done |
 | 7a | `connect/astar.py` — weighted A* on the semantic heuristic | done |
 | 7b | `connect/bfs.py` — bidirectional, uncapped, ground truth for the other two | done |
+| 7c | `connect/default.py` — bidirectional beam search, the app's default | done |
 | 8 | Explore mode — `explore/bfs.py`, `explore/beam.py` | next |
 
 Sample run — `Cat → Astronomy`, the same pair under both algorithms:
@@ -62,7 +71,10 @@ Astronomy`) exists that the default settings miss. Lowering the weight `W` searc
 costs more expansions; `W = 0` orders purely by hops and `W` very large reproduces greedy.
 
 First run for a given page is slow (~80s here) — it fetches every link and embeds each one. The
-two-layer cache makes the same run near-instant afterwards (<0.01s).
+two-layer cache makes the same run near-instant afterwards (<0.01s). `default.py` cuts cold-run
+cost two ways: frontier fetches within a ply run concurrently (a thread pool, not sequential
+requests), and a ply's cache-miss titles are embedded in one batched `model.encode(list)` call
+instead of one call per title. Neither changes search behavior — same ranking, same output.
 
 Everything under `src/wikimap/` beyond `wiki/`, `embed.py`, `graph/`, and `algorithms/` is still
 a placeholder — a module docstring stating that file's responsibility, no implementation.
@@ -107,10 +119,11 @@ uvicorn wikimap.server.app:app --reload
 | --- | --- |
 | `GET /` | The frontend (form, graph canvas, run log) |
 | `GET /api/connect?seed=&target=` | SSE stream — one `step` event per algorithm tick |
-| `GET /api/connect?…&algorithm=greedy\|astar\|bfs` | Which Connect algorithm to run (default `greedy`) |
+| `GET /api/connect?…&algorithm=greedy\|astar\|bfs\|default` | Which Connect algorithm to run (default `default`) |
 | `GET /api/connect?…&top_k=&max_depth=&max_nodes=&heuristic_weight=&hop_scale=` | Per-run knobs. All optional; out-of-range values give a 422 |
 | `GET /api/config` | The knobs *and their bounds*, read-only (contract 1: the frontend never hardcodes them) |
 | `GET /api/page?title=` | One page's real Wikipedia summary + URL, fetched on demand when a node is clicked |
+| `GET /api/suggest?q=` | Real Wikipedia title suggestions for the FROM/TO autocomplete dropdowns |
 
 Settings are per request, not global state — two browser tabs can run different `top_k` values
 without interfering. `top_k` is capped at 20 (locked decision C: uncapped expansion reaches ~27M

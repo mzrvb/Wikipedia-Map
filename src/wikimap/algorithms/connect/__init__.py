@@ -14,12 +14,18 @@ ABC's guarantee (each provides `run`) is what makes them interchangeable.
 
 from wikimap.algorithms.connect.astar import AStarConnect
 from wikimap.algorithms.connect.bfs import BFSConnect
+from wikimap.algorithms.connect.default import DefaultConnect
 from wikimap.algorithms.connect.greedy import GreedyConnect
 
 ALGORITHMS = {
     "greedy": GreedyConnect,
     "astar": AStarConnect,
     "bfs": BFSConnect,
+    "default": DefaultConnect,
 }
 
-DEFAULT_ALGORITHM = "greedy"
+# Bidirectional weighted A* (default.py) — top-K capped like astar, searched from
+# both ends like bfs, so it's usually the cheapest AND least visually explosive
+# choice for someone who just wants a good route without picking an algorithm.
+# See default.py's module docstring for why it is still not provably optimal.
+DEFAULT_ALGORITHM = "default"

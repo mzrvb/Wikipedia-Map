@@ -58,6 +58,14 @@ class Embedder:
         """Embed a single page title into a dense vector."""
         return self._get_model().encode(title)
 
+    def embed_batch(self, titles: list[str]) -> list[np.ndarray]:
+        """Embed many titles in one model call. `encode` batches internally
+        (vectorized forward pass) instead of paying per-title Python/model overhead
+        one call at a time — the win noted as a TODO since the original MVP."""
+        if not titles:
+            return []
+        return list(self._get_model().encode(titles))
+
 
 class EmbeddingCache:
     """Two-layer cache in front of Embedder.embed, keyed by page title.
@@ -96,6 +104,44 @@ class EmbeddingCache:
     def similarity(self, title_a: str, title_b: str) -> float:
         """Cosine similarity between two page titles, using cached embeddings."""
         return cosine_similarity(self.embed(title_a), self.embed(title_b))
+
+    def similarity_many(self, titles: list[str], anchor: str) -> dict[str, float]:
+        """Cosine similarity of many titles against one fixed anchor, batched.
+
+        Same memory -> disk -> compute chain as `embed`, but cache misses are
+        collected and sent to `Embedder.embed_batch` as one model call instead of
+        one `encode()` per title — the dominant per-tick cost for default.py/
+        greedy.py/astar.py, which each score an entire ply's worth of candidates.
+        """
+        anchor_vector = self.embed(anchor)
+
+        misses = []
+        vectors: dict[str, np.ndarray] = {}
+        for title in titles:
+            if title in self._memory:
+                vectors[title] = self._memory[title]
+                continue
+            path = self._path_for(title)
+            if path.exists():
+                vector = np.array(json.loads(path.read_text(encoding="utf-8")))
+                self._memory[title] = vector
+                vectors[title] = vector
+                continue
+            misses.append(title)
+
+        if misses:
+            computed = self._embedder.embed_batch(misses)
+            for title, vector in zip(misses, computed, strict=True):
+                self._memory[title] = vector
+                self._path_for(title).write_text(
+                    json.dumps(vector.tolist()), encoding="utf-8"
+                )
+                vectors[title] = vector
+
+        return {
+            title: cosine_similarity(vector, anchor_vector)
+            for title, vector in vectors.items()
+        }
 
     def _path_for(self, title: str) -> Path:
         # Same filesystem-safe encoding as wiki/cache.py: quote() escapes /, :, ?

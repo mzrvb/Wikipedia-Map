@@ -95,6 +95,50 @@ _(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood
 
 ## Understood (apprehended, for reference)
 
+- **2026-07-30 — Turn-selection starvation, in ascending levels. Fixed by redesign, not patch.**
+  Found live: a real "israel" -> "john f kennedy" search showed the target node sitting completely
+  disconnected — forward kept expanding, backward never did, not even once.
+
+  **Level 1 — one sentence.** Forward kept getting picked, tick after tick, because the question
+  deciding "whose turn is it" was one forward could barely ever lose.
+
+  **Level 2 — why, with an analogy.** Two tunnel crews digging toward each other, and a foreman who
+  decides who digs next by asking "whose current rock sample looks closer to the middle?" Crew B
+  hasn't swung a pick yet — their sample is the guess taken before anyone moved, and it never
+  updates until crew B is actually picked. Crew A digs, gets a fresh sample every time, and if that
+  sample ever looks even slightly decent, they win the next turn too. B isn't losing because they're
+  worse — they're losing because the thing being compared only updates for the side already moving.
+
+  **Level 3 — the rule, in this codebase's terms.** `default.py`'s old design ran two searches (one
+  from each end) and picked ONE to expand per tick by comparing each side's current best "how
+  promising is this" number. Backward's very first number was set once, at the start, and never
+  recalculated until backward was actually picked — so if forward kept finding decent candidates,
+  forward kept winning, and backward's frozen number just got relatively worse forever.
+
+  **Level 4 — precise mechanics, and the connection to `bfs.py`'s already-learned lesson.** Every
+  page carries `g` (real hops so far, exact) and `h` (a *guess* of hops remaining, from cosine
+  similarity). `f = g + W*h` is the "total estimated cost." The bug: using `f` — partly a guess — to
+  decide *whose turn it is*, instead of `g`, which is exact and directly comparable (both sides
+  start at 0). `bfs.py`'s own HISTORY entries already fought this exact bug class twice — comparing
+  raw queue length, then whole-frontier size, both proven wrong live — landing on "the only safe
+  comparison is depth LEVEL itself." The old `default.py` compared `f`, worse than either of
+  `bfs.py`'s two already-rejected attempts, since `f` isn't even monotonic.
+
+  **Level 5 — the fix actually chosen, and why it's stronger than a better comparison.** Proposed by
+  the user: don't compare anything — run both sides' *entire* current frontier every tick,
+  unconditionally, batch their candidates, prune each side's own top-K. There's no "whose turn"
+  question left to get wrong, because there's no turn. This turned out to also delete a whole other
+  piece of machinery for free: `astar.py`-style reopening (handling a cheap-looking route that later
+  turns out not to be cheapest) needed a persistent priority queue where "later" could mean "a
+  lower-cost path found after a higher-cost one already closed." In a design where both sides
+  advance exactly one hop, together, every tick, "later" can only ever mean "deeper" — so first
+  discovery is already the best any given tick's pruning can produce. **The general lesson: when a
+  comparison is fundamentally unfair (one side's number updates, the other's doesn't), the fix
+  usually isn't a better comparison — it's checking whether the comparison needs to exist at all.**
+
+  **Where to stop:** Level 3 is enough to understand what a screenshot of this bug looks like.
+  Level 4 is enough to reason about why a fix works. Level 5 only if reading/changing the code.
+
 - **2026-07-27 — A broad `except` is fine; a broad *silent* except is not.**
   `WikiClient.get_links` wraps its fetch in `except Exception: return []`. Catching everything is
   correct here — a timeout, a 429 and a malformed payload all mean "retry". The problem is what else
@@ -232,8 +276,29 @@ _(ABC/`base.py` was here; it clicked on 2026-07-25 — moved down to "Understood
   A* is guaranteed to find the *shortest* path only if `h` never overestimates ("admissible").
   Cosine is a vibe, not a bound, so **this A* has no such guarantee** — and it demonstrably lost:
   it returned a 3-hop `Cat → Astronomy` route while a 2-hop one (`Cat → Night vision → Astronomy`)
-  existed. Not a bug — the accepted cost of decision B. The lesson to keep: **a famous algorithm's
+  existed. ~~Not a bug — the accepted cost of decision B.~~ The lesson to keep: **a famous algorithm's
   guarantees come with preconditions, and using the name doesn't buy the guarantee.**
+
+  **Correction, 2026-07-29 — that was too hasty.** "Cosine is inadmissible" was true but incomplete;
+  it hid a second, *separate*, fixable bug riding along with it. **Level 7 — admissible vs.
+  consistent, the distinction I'd conflated.** *Admissible* means `h` never overestimates the true
+  remaining cost. *Consistent* is stricter: `h` also can't drop by more than one hop per hop walked
+  (the triangle inequality, one hop at a time). Textbook A* is allowed to close a node forever the
+  first time it's popped **only because a consistent heuristic proves that first pop already found
+  that node's cheapest cost.** Cosine has neither property — but the old code closed nodes forever
+  *anyway*, as if it did. That's not "the heuristic is a guess" — that's a stale invariant borrowed
+  from a precondition the code never checked. **The concrete failure this caused:** a page reachable
+  both via a route that merely *looks* cheap (low `h`) and, later, via a route that's genuinely
+  fewer hops, would close on the first (worse) route, and the second (better) discovery was thrown
+  away by `if link in expanded: continue` with no further thought. **The fix — reopening:** when a
+  strictly cheaper route to an already-closed page turns up, un-close it (`expanded.discard(link)`)
+  so it gets re-expanded from the better cost. Bounded, because costs only ever move down and are
+  small integers. **What's still true after the fix:** the run still stops at the first pop of the
+  *target itself*, and nothing proves that's the true minimum without an admissible heuristic or
+  exhaustive search (`bfs.py`'s job) — so "NOT OPTIMAL" stays correct, just for a narrower, honest
+  reason than before. **The general lesson, sharpened:** when a textbook algorithm's precondition
+  doesn't hold, check which of its *behaviors* were relying on that precondition — some may be
+  fixable (reopening) even though the headline guarantee (optimality) isn't fully recoverable.
 
 - **2026-07-26 — `heapq` = "always hand me the smallest thing next".**
   A* needs to expand the frontier page with the lowest `f`. Re-sorting a list every tick would be

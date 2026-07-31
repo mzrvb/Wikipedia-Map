@@ -64,9 +64,11 @@ class TestReachesTarget:
 class TestBidirectionality:
     def test_backward_search_finds_a_meeting_forward_alone_would_take_longer_to_reach(self):
         """seed fans out to 5 dead-end pages; the real route to target only exists
-        through F3. Forward's queue balloons to 5 after the first tick, so the
-        smaller-queue rule hands the next several turns to BACKWARD - proving
-        get_backlinks is genuinely driving the search, not just decoration."""
+        through F3. After tick 1, forward's frontier sits at depth 1 (5 nodes) while
+        backward's still sits at depth 0 (just target) - the depth-LEVEL rule (not
+        queue length or frontier size, see the module docstring on why those are
+        both bugs) hands tick 2 to BACKWARD, proving get_backlinks is genuinely
+        driving the search, not just decoration."""
         links = {
             "seed": ["F1", "F2", "F3", "F4", "F5"],
             "F3": ["Mid"],

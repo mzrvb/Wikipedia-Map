@@ -250,6 +250,19 @@ def page_detail(title: str = Query(min_length=1, max_length=200)) -> dict:
     return {"title": title, "summary": result["summary"], "url": result["url"]}
 
 
+@app.get("/api/suggest")
+def suggest(q: str = Query(min_length=1, max_length=200)) -> list[str]:
+    """Real Wikipedia titles matching `q` as a prefix — the data behind the seed/
+    target autocomplete dropdown, queried on every debounced keystroke.
+
+    Not a search knob (contract 1): it never changes what an algorithm does, only
+    helps the user land on a real title before a run even starts, so it isn't in
+    RunParams or /api/config's published knobs — same category as /api/page, and
+    it shares that endpoint's WikiClient singleton rather than building its own.
+    """
+    return _wiki_client().search_titles(q)
+
+
 # Mounted LAST and at "/" so it acts as the fallback: the /api routes above are
 # matched first, and anything else falls through to a file. html=True serves
 # index.html for "/" — that's what lets the API and the frontend share one origin

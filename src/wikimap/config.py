@@ -47,9 +47,13 @@ TOP_K_BOUNDS = (1, 20)
 MAX_DEPTH = 6
 MAX_DEPTH_BOUNDS = (1, 12)  # 0 would forbid moving at all; 12 is well past useful
 
-# Hard ceiling on total candidate nodes emitted across a whole run — the safety net
-# so a bad run can't crawl forever even if MAX_DEPTH logic regresses. PLACEHOLDER,
-# set comfortably above MAX_DEPTH * TOP_K so depth is the usual limiter, not this.
+# Hard ceiling on total candidate nodes emitted across a whole run. Removed 2026-07-30
+# from greedy/astar/default — see HISTORY — because it was already redundant there:
+# every node's fan-out is capped to TOP_K by decision C, so those three algorithms'
+# worst case is bounded by MAX_DEPTH * TOP_K without this. bfs is the one algorithm
+# that deliberately has NO per-node cap (it expands every link, unranked — that's what
+# makes it the ground truth), so this is now bfs's safety net alone: without it, a
+# single wide page (a TV-show hub with hundreds of links, say) can fan out forever.
 MAX_NODES = 500
 MAX_NODES_BOUNDS = (20, 5000)  # floor of 20 so at least one full tick can emit
 
@@ -90,6 +94,16 @@ HEURISTIC_WEIGHT_BOUNDS = (0.0, 25.0)
 # thing the cap exists to avoid. Recorded so the BFS results aren't over-trusted.
 BACKLINK_LIMIT = 500
 
+# --- Title autocomplete (seed/target inputs) -----------------------------------
+
+# How many candidate titles /api/suggest returns per keystroke. Not a RunParams
+# field and not published via /api/config's "bounds" — unlike everything else in
+# this section, it never reaches an algorithm. Contract 1 is about knobs that
+# change what a SEARCH does; this only helps the user land on a real title before
+# a search starts at all, same category as BACKLINK_LIMIT being a plain constant
+# WikiClient reads directly rather than something threaded through RunParams.
+SUGGEST_LIMIT = 8
+
 
 # --- Per-run settings ---------------------------------------------------------
 
@@ -126,6 +140,9 @@ class RunParams:
 
     top_k: int = TOP_K
     max_depth: int = MAX_DEPTH
+    # bfs-only as of 2026-07-30 (see HISTORY) — greedy/astar/default no longer read
+    # this, but it stays on the shared params object rather than growing a
+    # bfs-specific settings type, same reasoning as heuristic_weight/hop_scale below.
     max_nodes: int = MAX_NODES
     # A*-only. Greedy ignores these, which is fine — one params object covers every
     # Connect algorithm rather than each growing its own parallel settings type.

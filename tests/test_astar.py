@@ -165,47 +165,50 @@ class TestCaps:
         assert "Sibling" in order  # but the shallow branch still got its turn
         assert "exhausted" in steps[-1].note
 
-    def test_node_cap_stops_the_run(self):
-        # A branching tree so the frontier never runs dry before the cap trips.
-        links = {f"N{i}": [f"N{i * 5 + j}" for j in range(1, 6)] for i in range(200)}
-        scores = {f"N{i}": 0.5 for i in range(1000)}
 
-        steps = _run(
-            links, scores, seed="N0", target="T", params=RunParams(max_nodes=20)
-        )
-
-        assert "node cap" in steps[-1].note
-
-    def test_node_cap_counts_distinct_pages_not_repeat_sightings(self):
-        """Mirror of the greedy test — max_nodes counts circles on screen, not
-        sightings. Here the counter IS `len(cost_from_seed)`, whose keys are already
-        distinct titles, rather than a separate running total that could drift.
-
-        max_nodes=20 because RunParams clamps to MAX_NODES_BOUNDS' floor of 20;
-        max_depth=12 so the depth cap can't trip first and mask what's under test.
-        """
+class TestReopensNodesOnCheaperRediscovery:
+    def test_a_cheaper_route_to_an_already_expanded_node_still_wins(self):
+        """Cosine is a semantic guess, not a bound (decision B), so a page can get
+        closed via a costly route that merely LOOKS close to the target, before a
+        genuinely cheaper route to it is even discovered -- the failure mode STATUS
+        blames for A* reporting a 3-hop solve when a 2-hop route existed. Fast1/Fast2
+        look almost perfect (score 0.95), so A* dives down them and closes X at depth
+        3 first. Only afterwards does Slow (score 0.3, unappealing, expanded later)
+        turn out to reach X in a single hop. Without reopening, X's cheaper cost via
+        Slow is silently thrown away and the run reports A -> Fast1 -> Fast2 -> X ->
+        End (4 hops) instead of the real A -> Slow -> X -> End (3 hops)."""
         links = {
-            f"N{i}": [f"N{i + 1}", f"X{i}a", f"X{i}b", f"X{i}c", "Shared"]
-            for i in range(50)
+            "A": ["Fast1", "Slow"],
+            "Fast1": ["Fast2"],
+            "Fast2": ["X"],
+            "Slow": ["X"],
+            "X": ["End"],
         }
-        scores = (
-            {f"N{i}": 0.9 for i in range(51)}
-            | {f"X{i}{s}": 0.5 for i in range(50) for s in "abc"}
-            | {"Shared": 0.1}
-        )
+        scores = {"Fast1": 0.95, "Fast2": 0.95, "X": 0.95, "Slow": 0.3}
 
-        steps = _run(
-            links,
-            scores,
-            seed="N0",
-            target="T",
-            params=RunParams(max_nodes=20, max_depth=12),
-        )
+        steps = _run(links, scores, seed="A", target="End")
 
-        assert "node cap" in steps[-1].note
-        emitted = {n.id for s in steps for n in s.nodes}
-        assert f"{len(emitted)} nodes" in steps[-1].note
-        assert sum("Shared" in {n.id for n in s.nodes} for s in steps) > 1
+        assert "reached 'End' in 3 hops: A -> Slow -> X -> End" in steps[-1].note
+
+    def test_reopened_node_is_expanded_again_from_its_cheaper_cost(self):
+        """Reopening only matters if the page's OWN downstream links get relaxed
+        again from the better cost -- otherwise the cheaper route to X would be
+        recorded but X's children would still carry the stale, deeper cost.
+        Same shape as the test above; this one checks X shows up in the expansion
+        order twice (once per time it was closed), proving it was genuinely
+        reprocessed rather than just relabelled."""
+        links = {
+            "A": ["Fast1", "Slow"],
+            "Fast1": ["Fast2"],
+            "Fast2": ["X"],
+            "Slow": ["X"],
+            "X": ["End"],
+        }
+        scores = {"Fast1": 0.95, "Fast2": 0.95, "X": 0.95, "Slow": 0.3}
+
+        steps = _run(links, scores, seed="A", target="End")
+
+        assert _expanded(steps).count("X") == 2
 
 
 class TestStepShape:

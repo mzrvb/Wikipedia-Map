@@ -49,6 +49,15 @@ greedy/A*. Backward-discovered nodes carry -hops-from-target instead of re-using
 same positive scale — there is no single "true" depth for a node discovered walking
 backward from the target, and the sign lets "colour by depth" visually separate the
 two searches meeting in the middle, which is otherwise invisible in the drawn graph.
+
+`max_depth` means something different here than it does for greedy/A*, on purpose.
+For a one-directional search it caps the one walk, so it IS the max path length. Here
+it caps each side independently (`depth < params.max_depth` on both the forward and
+the backward branch) — so the true reachable path length is up to `2 * max_depth`,
+not `max_depth`. Decided, not accidental: halving it to match greedy/A*'s single-walk
+meaning would make bidirectional BFS unable to certify the very depths those
+algorithms are allowed to search to, defeating its purpose as their ground truth. The
+same slider means "hops, one direction" for greedy/A* and "hops, per side" for bfs.
 """
 
 from collections.abc import Iterator

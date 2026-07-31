@@ -203,6 +203,51 @@ class TestBacklinks:
         assert mock_get.call_count == 2
 
 
+def _prefixsearch_response(titles: list[str]):
+    """Fake requests.Response for a list=prefixsearch query."""
+    response = MagicMock()
+    response.json.return_value = {"query": {"prefixsearch": [{"title": t} for t in titles]}}
+    return response
+
+
+class TestSearchTitles:
+    """The lookup behind the seed/target autocomplete dropdown."""
+
+    def test_returns_titles_and_filters_namespace_server_side(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient()
+
+        with patch("wikimap.wiki.client.requests.get") as mock_get:
+            mock_get.return_value = _prefixsearch_response(["Cat", "Category theory"])
+            titles = client.search_titles("Cat")
+
+        assert titles == ["Cat", "Category theory"]
+        _, kwargs = mock_get.call_args
+        assert kwargs["params"]["psnamespace"] == 0
+        assert kwargs["params"]["pssearch"] == "Cat"
+        assert kwargs["headers"]["User-Agent"] == "test/0.0 (test@example.com)"
+
+    def test_limit_is_sent_to_the_api_not_sliced_after_the_fact(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient()
+
+        with patch("wikimap.wiki.client.requests.get") as mock_get:
+            mock_get.return_value = _prefixsearch_response(["Cat"])
+            client.search_titles("Cat", limit=3)
+
+        assert mock_get.call_args.kwargs["params"]["pslimit"] == 3
+
+    def test_retries_then_gives_up(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient(retries=2, delay=0)
+
+        with patch("wikimap.wiki.client.requests.get") as mock_get:
+            mock_get.side_effect = RuntimeError("boom")
+            assert client.search_titles("Anything") == []
+
+        assert mock_get.call_count == 2
+
+
 class TestLinkCache:
     def test_second_call_hits_memory_not_network(self, tmp_path):
         client = MagicMock()

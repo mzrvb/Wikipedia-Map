@@ -160,19 +160,28 @@ def test_node_panel_is_not_inside_the_graph_container(client):
 
 
 class _FakeWikiClient:
-    """Stand-in for WikiClient: get_summary looks up a canned title -> dict table."""
+    """Stand-in for WikiClient: get_summary looks up a canned title -> dict table;
+    search_titles looks up a canned query -> title-list table. Both endpoints that
+    use this fixture (/api/page, /api/suggest) share the one WikiClient singleton
+    in real code, so one fake covers both here too."""
 
-    def __init__(self, summaries: dict[str, dict]):
+    def __init__(self, summaries: dict[str, dict], suggestions: dict[str, list[str]] | None = None):
         self._summaries = summaries
+        self._suggestions = suggestions or {}
 
     def get_summary(self, title: str) -> dict | None:
         return self._summaries.get(title)
 
+    def search_titles(self, query: str) -> list[str]:
+        return self._suggestions.get(query, [])
+
 
 @pytest.fixture
 def fake_wiki_client(monkeypatch):
-    def _install(summaries: dict[str, dict]) -> _FakeWikiClient:
-        client = _FakeWikiClient(summaries)
+    def _install(
+        summaries: dict[str, dict], suggestions: dict[str, list[str]] | None = None
+    ) -> _FakeWikiClient:
+        client = _FakeWikiClient(summaries, suggestions)
         monkeypatch.setattr(app_module, "_wiki_client", lambda: client)
         return client
 
@@ -212,6 +221,30 @@ class TestPageDetailEndpoint:
     @pytest.mark.parametrize("params", [{}, {"title": ""}, {"title": "x" * 201}])
     def test_rejects_bad_title(self, client, params):
         assert client.get("/api/page", params=params).status_code == 422
+
+
+class TestSuggestEndpoint:
+    """/api/suggest: the seed/target autocomplete dropdown's data source."""
+
+    def test_returns_matching_titles(self, client, fake_wiki_client):
+        fake_wiki_client({}, {"Cat": ["Cat", "Category theory"]})
+
+        response = client.get("/api/suggest", params={"q": "Cat"})
+
+        assert response.status_code == 200
+        assert response.json() == ["Cat", "Category theory"]
+
+    def test_no_matches_is_an_empty_list_not_an_error(self, client, fake_wiki_client):
+        fake_wiki_client({}, {})
+
+        response = client.get("/api/suggest", params={"q": "Zzznotarealtitlezzz"})
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    @pytest.mark.parametrize("params", [{}, {"q": ""}, {"q": "x" * 201}])
+    def test_rejects_bad_query(self, client, params):
+        assert client.get("/api/suggest", params=params).status_code == 422
 
 
 def test_config_endpoint_reports_the_knobs(client):

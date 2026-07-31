@@ -28,17 +28,36 @@
   <body>
     <header>
       <h1>wikimap</h1>
+      <!-- Centered via header's 3-column grid (style.css), independent of h1's and
+           .mode's widths on either side. Explore has no backend yet — see CLAUDE.md's
+           "finish Connect before starting Explore" — so its button ships disabled
+           rather than wired to a mode that doesn't exist. Connect needs no click
+           handler: it's the only real option, so it's simply always the active one. -->
+      <div class="mode-toggle" role="tablist" aria-label="Mode">
+        <button type="button" class="active" aria-pressed="true">Connect</button>
+        <button type="button" disabled title="Not built yet" aria-pressed="false">Explore</button>
+      </div>
       <span class="mode">Connect — greedy</span>
     </header>
 
     <form id="run-form">
       <label>
         From
-        <input id="seed" name="seed" value="Cat" required maxlength="200" />
+        <!-- .input-wrap gives the suggestion list a positioned ancestor sized to
+             the input alone (not the whole label, which also contains "From"/"To"
+             text) — see style.css. autocomplete="off" so the browser's own
+             address-bar-style suggestions don't fight ours for the same box. -->
+        <div class="input-wrap">
+          <input id="seed" name="seed" value="Cat" required maxlength="200" autocomplete="off" />
+          <ul id="seed-suggestions" class="suggestions" hidden></ul>
+        </div>
       </label>
       <label>
         To
-        <input id="target" name="target" value="Astronomy" required maxlength="200" />
+        <div class="input-wrap">
+          <input id="target" name="target" value="Astronomy" required maxlength="200" autocomplete="off" />
+          <ul id="target-suggestions" class="suggestions" hidden></ul>
+        </div>
       </label>
       <label>
         Algorithm
@@ -78,20 +97,27 @@
               <input id="max_depth" name="max_depth" type="number" disabled />
               <small id="max_depth-range"></small>
             </label>
-            <label>
+            <!-- bfs-only (see config.py, 2026-07-30): the other three algorithms cap
+                 each node's fan-out to top-K already, so max_depth * top-K already
+                 bounds them and this cap is redundant there. bfs has no such per-node
+                 cap by design (it's the uncapped ground truth), so this is its
+                 backstop against a single huge-fanout page (a TV-show hub, say)
+                 expanding forever. -->
+            <label class="nodecap">
               <span>max nodes</span>
               <input id="max_nodes" name="max_nodes" type="number" disabled />
               <small id="max_nodes-range"></small>
             </label>
-            <!-- A*-only. W=0 orders purely by hops (breadth-first); W very large
-                 ignores hops (greedy). The whole spectrum lives on this control. -->
-            <label class="astar-only">
+            <!-- Used by astar AND default (bidirectional A* — see default.py); dimmed
+                 for greedy/bfs, which ignore both. W=0 orders purely by hops
+                 (breadth-first); W very large ignores hops (greedy). -->
+            <label class="weighted">
               <span>weight W</span>
               <input id="heuristic_weight" name="heuristic_weight" type="number" step="0.5" disabled />
               <small id="heuristic_weight-range"></small>
             </label>
             <!-- Converts cosine into hops so g and h share a unit — see astar.py. -->
-            <label class="astar-only">
+            <label class="weighted">
               <span>hop scale</span>
               <input id="hop_scale" name="hop_scale" type="number" step="0.5" disabled />
               <small id="hop_scale-range"></small>
@@ -106,13 +132,32 @@
               <span>Arrows</span>
               <input id="d-arrows" type="checkbox" data-display checked />
             </label>
+            <label class="row">
+              <span>Auto-fit view</span>
+              <!-- Escape hatch, same pattern as Physics below: keeps the camera
+                   zoomed to fit the whole graph as it grows. Uncheck to take manual
+                   control of pan/zoom without the view yanking back on the next tick. -->
+              <input id="d-autoFit" type="checkbox" data-display checked />
+            </label>
             <label>
               <span>Text fade threshold</span>
               <input id="d-labelZoom" type="range" data-display min="0" max="2" step="0.05" value="0.4" />
             </label>
             <label>
-              <span>Node size</span>
+              <span>Node size (base)</span>
               <input id="d-nodeSize" type="range" data-display min="4" max="40" step="1" value="12" />
+            </label>
+            <label class="row">
+              <span>Size by</span>
+              <!-- Mirrors "Colour by" below: same score/depth fields already sitting
+                   on every node, this time scaling the base slider above per node
+                   instead of applying it uniformly. "uniform" reproduces the old
+                   one-slider-fits-all behaviour exactly. -->
+              <select id="d-sizeBy" data-display>
+                <option value="uniform">uniform</option>
+                <option value="score">similarity</option>
+                <option value="depth">depth</option>
+              </select>
             </label>
             <label>
               <span>Link thickness</span>

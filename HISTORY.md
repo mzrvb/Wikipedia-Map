@@ -9,6 +9,529 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## 2026-07-30 — live-tested algo speed/efficiency across all four algorithms on hard pairs
+
+Requested directly: a head-to-head comparison, using genuinely hard cross-domain pairs rather
+than the easy ones tested earlier the same day ("those are easy links... try shit like LaMelo
+Ball to the Spanish Revolution"). No code changed — purely observational, using the timing
+feature and `/api/suggest` autocomplete both built earlier this same day.
+
+**`The Simpsons → Satire`** was trivial (direct 1-hop link) for all four — but still surfaced a
+real number worth keeping: `The Simpsons` has 2098 raw outbound links, wider even than
+`Friends`' 896 from the previous session's `bfs` failure. `bfs` only survived here because the
+meeting was found inside the very first (uncapped) node's own fan-out, before the node cap ever
+got a chance to fire — a coincidence of this specific pair, not evidence the underlying issue is
+fixed.
+
+**`Interstellar (film) → Time`** (cold cache) split the algorithms for the first time: `greedy`
+found a 2-hop route through `TIME` — Time Magazine's page, not the target concept — because
+cosine scored the two titles as effectively identical (1.000). `default` found the semantically
+correct `Interstellar (film) → Theory of relativity → Time` in the same 2 hops, because its
+backward half started from the real target and never considered the magazine at all. This is the
+title-only-embedding weakness `wikimap-connect-reliability-research` (memory) flagged as
+recommendation #5, now demonstrated live rather than theorized.
+
+**`LaMelo Ball → Spanish Revolution`** — the real stress test:
+- `greedy`: failed, hit `max_depth`, dead-ended at `French Revolution` (0.721 similarity, wrong
+  page) after drifting through unrelated LA-local-news pages.
+- `astar`: manually stopped after 7+ minutes without finishing. Trapped in a wide plateau of
+  dozens of "Spanish [sports league]" pages that all scored similarly on the shared word
+  "Spanish," and had to exhaust nearly all of them (by `f`-order) before reaching the genuinely
+  close branches (`Spanish monarchy`, `Spanish Civil War`, h≈1.1). A different failure mode from
+  greedy's drift — breadth without progress, not a wrong commitment.
+- `default`: solved it in 3.37s, 6 hops, via `Spain`/`Spanish Revolution of 1936`. Its
+  bidirectional design structurally sidesteps astar's plateau — the backward half doesn't need
+  one continuously-low-h path all the way through, only a meeting point, and it found one via a
+  completely different neighborhood than forward's.
+- `bfs`: hit the node cap at 1031 nodes in 4.43s — not from the seed this time, but from `2017
+  NBA draft` (a *one-hop* neighbor) alone contributing 624 new nodes. **Sharper than the earlier
+  `Friends` finding**: the hub-fan-out problem isn't only a seed/target property — any node
+  discovered mid-search can be a hub. A future title-pattern pre-filter (recommendation #1 in
+  the reliability research) needs to apply everywhere `get_links`/`get_backlinks` is called, not
+  just at a run's two endpoints.
+
+Also the third independent sighting of a disambiguation page counted as a real hop
+(`Spanish Revolution (disambiguation)` in `default`'s path here, after `Power (disambiguation)`
+in an earlier session) — enough repeat evidence to treat recommendation #3 (disambiguation
+detection via MediaWiki's `pageprops`) as the next highest-value fix from that research, not
+just a hypothesis. See memory `wikimap-connect-reliability-research` for the full ranked list
+these findings feed into.
+
+---
+
+## 2026-07-30 — frontend: per-step and total-run timing benchmarks
+
+Requested directly: visible timing for each Step and for a whole run, partly to make the perf
+work below (concurrent fetch + batched embedding) demonstrable rather than just asserted.
+Built entirely in `app.js` — no backend change, no `Step` contract change. Deliberately: "how
+long did this tick take to reach the screen" is a rendering-side question, the same family
+contract 2 already keeps off algorithms (node size, colour). Measured off SSE arrival
+timestamps via `performance.now()` — monotonic and sub-millisecond, unlike `Date.now()`, which
+can jump if the system clock adjusts mid-run.
+
+Each Step's log line now reads `[+123ms · 4.56s total] <note>` — delta since the previous
+Step, elapsed since the request went out. Run termination (the `done` SSE event, a manual Stop
+click, or a dropped connection) logs the run's total. `runStartTime`/`lastStepTime` are
+module-level state, cleared inside `stop()` — the one function every termination path already
+funnels through — rather than separately at each of the three call sites, so there's a single
+place that owns "a run is/isn't currently being timed."
+
+**Replay reuses the real timings, not fabricated ones.** Replay already re-applies the
+recorded Step stream on a fixed 600ms animation clock (see the node-detail-panel era's replay
+feature). Timing it off THAT clock would show a distorted benchmark — every step reading
+~600ms apart regardless of what actually happened. Instead `recordedTimings` is a second array
+parallel to the existing `recorded` Step array, capturing each Step's real
+`{deltaMs, elapsedMs}` as it arrived live; replay looks those up by index instead of
+recomputing off its own clock. Frontend-only, 122 tests unaffected, `ruff check` clean (no
+Python touched).
+
+## 2026-07-30 — `default.py` per-tick cost cut: concurrent fetch (threads) + batched embedding
+
+Asked directly, after walking through where each Connect algorithm's time actually goes:
+is `default.py`'s per-tick fetch cost worth cutting? Two genuinely separate costs had been
+bundled under "fetch cost" and got two separate fixes.
+
+**Fetch (network wait).** `default.py`'s ply loop fetched each frontier node's links/backlinks
+one at a time — a plain Python `for` loop, one blocking `LinkCache.get_links`/`get_backlinks`
+call after another. For a full ply (up to `top_k=20` nodes per side) that's up to 20 sequential
+round trips per side before a single candidate can even be scored. Fixed with a
+`ThreadPoolExecutor`: every frontier node's fetch is submitted at once and awaited together.
+This does NOT reduce fetch count — decision C still requires seeing every candidate link
+before ranking it, so nothing is skipped — it cuts wall-clock wait, because a thread blocked
+on socket I/O releases the GIL, so Python threads genuinely overlap while waiting even though
+only one can run bytecode at a time. Confirmed safe without locking: forward and backward
+frontier parents are always disjoint mid-run (a shared title would already have triggered a
+same-tick meeting and ended the run — see the redesign entry below), so no two threads ever
+touch the same `LinkCache` entry concurrently. This is the same lever `bfs.py`'s own HISTORY
+entry (2026-07-29, node-cap overshoot) already flagged as real-but-unbuilt for its own ply
+cost; not yet ported there.
+
+**Embedding (model compute).** This one was a genuinely old TODO — the original MVP note far
+below in this file already said "Embedding is one title at a time... Batching via
+`model.encode(list)` is the obvious win," and it sat unbuilt the whole time since. New
+`Embedder.embed_batch(titles)` wraps `model.encode()` on a list instead of a single string
+(the model batches internally — one vectorized forward pass instead of N small ones), and
+`EmbeddingCache.similarity_many(titles, anchor)` collects a whole ply's cache-miss titles and
+sends them through one `embed_batch` call, falling back to the existing memory/disk layers for
+anything already cached. `default.py`'s ply loop is the only caller so far — greedy/astar
+still embed one candidate at a time, since neither builds a whole-ply candidate list the way
+default.py's ply-synchronized shape does; porting the same batching to them is a smaller,
+separate change if it's worth doing later.
+
+Neither fix touches ranking, pruning, or termination — same algorithm, same output, just
+faster. 122 tests green (`_FakeEmbedCache` in `test_default.py` gained `similarity_many`, no
+existing assertion changed), `ruff check` clean.
+
+## 2026-07-30 — `connect/default.py` redesigned: turn-based heap → ply-synchronized beam search
+
+Live-tested the morning's freshly-shipped `default.py` against a real search, "israel" ->
+"john f kennedy," through the browser. The graph showed forward fanning out normally (`israel`,
+then `Bill Clinton`) while the target node sat completely disconnected — zero edges, zero backward
+expansions in the log, not even an empty one. Traced by hand: both sides' frontiers start with an
+identical `f` value on tick 1 (both seeded from the same seed-target similarity), and the
+turn-selection rule (`top_f_forward <= top_f_backward`) resolves ties in forward's favor. Backward's
+frontier value is set once, at the start, and never recalculated until backward is actually picked
+— so if forward keeps discovering candidates that score even moderately well (both "Israel" and
+"Bill Clinton" are large, well-connected hub pages), forward can keep winning that comparison
+indefinitely. This is the exact bug class `bfs.py`'s own HISTORY entries already fought twice
+(comparing raw queue length, then whole-frontier size — both proven wrong live) before landing on
+"the only safe comparison is depth LEVEL itself." The old `default.py` compared `f`, which is worse
+than either of `bfs.py`'s two already-rejected attempts, since `f` bakes in a heuristic guess and
+isn't even monotonic the way queue length or frontier size at least were.
+
+**The user's proposal, and why it's a stronger fix than patching the comparison:** rather than
+pick a side each tick, run both from seed and target simultaneously — batch every candidate link
+from both sides' current frontier together, score them, and prune to top-K as the search moves
+inward. Implemented as a ply-synchronized beam search, directly borrowing `bfs.py`'s "advance one
+full wavefront per tick" shape and layering decision C's top-K cosine cap back on top (unlike
+`bfs.py`'s deliberately uncapped exception). There is no turn-selection left to get wrong, because
+there is no turn — every tick expands both sides' entire current frontier, unconditionally.
+
+Design decisions made while translating "batch and prune" into code, each a real fork with a
+reasoned answer:
+
+1. **Pruning is per-side, not pooled.** Forward's candidates are ranked by similarity to the
+   target; backward's by similarity to the seed (decision C, unchanged) — two different questions
+   on two different anchors, not one shared scale. Pooling into a single top-K cut would let
+   whichever side's neighbourhood scores higher *this tick* crowd out the other's slots — the same
+   starvation shape, just relocated from turn-selection into the prune step instead of eliminated.
+   Verified with a test where forward's candidates score 0.9 and backward's score 0.01: backward
+   still keeps its own top-K regardless.
+2. **Reopening (`astar.py`'s fix, inherited by the original `default.py`) is gone — and it's a
+   genuine simplification, not a lost feature, not a regression.** Reopening existed to handle a
+   route that looked cheap enough to close a page early, only for a genuinely cheaper route to
+   surface later — a scenario that specifically needed a persistent priority queue where "later"
+   could mean "a lower-cost path processed after a higher-cost one already closed that page." Here,
+   depth increases by exactly one, together, on both sides, every tick. A link is only ever
+   first-seen in the ply where some survivor of the current frontier reaches it, and that ply
+   number can only go up — first discovery already IS the best depth this design's pruning can
+   produce. Nothing to reopen.
+3. **`heuristic_weight` (W) and `hop_scale` are no longer read.** They existed to make
+   `f = g + W*h` comparable *across* a frontier holding candidates at different depths — the
+   turn-selection heap that no longer exists. Every candidate considered in one tick now shares the
+   same depth, so blending in `g` compares a constant against itself; pure similarity ranking is
+   already the right order. `astar.py` still needs both; this file doesn't, same as `greedy.py`
+   never reading `config` once params landed.
+4. **A link discovered by more than one frontier node in the same tick is a new wrinkle** that
+   never existed when only one node was expanded per tick. Resolved by keeping each link's
+   best-scoring parent edge and discarding the rest — deterministic (first-seen wins on an exact
+   tie), tested directly.
+5. **Meeting detection now checks three sources, not two:** a side's new find against the other
+   side's pre-existing depths (as before), in both directions, PLUS a side's new find against the
+   *other side's own new finds from the same tick* — since both sides genuinely move at once now, a
+   page independently discovered by both sides in one tick is a real meeting, not something to
+   defer a tick to notice.
+6. **Termination simplified:** stop at the first ply where any meeting is found (reporting the
+   cheapest if more than one turned up), replacing the old `best_total`/keep-hunting-across-many-
+   ticks logic that existed specifically to guard against a naive "stop at first contact" bug in a
+   one-node-at-a-time model. That guard matters less once a whole ply's candidates are already
+   gathered and compared together before any decision is made — the same simplification `bfs.py`
+   already makes for the identical reason.
+
+**Collided, briefly, with the other concurrent session.** While this rewrite was in progress, the
+other terminal was independently removing `max_nodes` from `greedy.py`/`astar.py` (see the entry
+below) — and, discovered mid-edit here, had *also* already applied the same removal to this
+brand-new, still-untracked `default.py` and its test file before this session got to it. Both
+sessions converged on the identical decision (this design is bounded by `2 * max_depth * top_k`
+without a separate cap, same reasoning as the other three algorithms), so nothing broke — 11/11
+`test_default.py` tests still green afterward — but it was pure luck, not coordination: two agents
+editing the same untracked file with no lock between them could just as easily have silently
+overwritten real work with no git history to recover it from. Flagged to the user live; the other
+terminal was paused before further work continued here.
+
+Not manually re-verified in a browser against the original "israel" -> "john f kennedy" case this
+session (that specific search may still fail regardless — see Bug 2 in the same live-testing pass,
+the seed/target strings aren't resolved against real Wikipedia titles before searching, a separate,
+already-flagged issue). What IS proven: the structural starvation bug is gone by construction, not
+patched — there is no code path left in this file that can pick one side over the other.
+
+104 fast tests before this pass (post max_nodes-removal baseline), 114 after (test_default.py grew
+from 13 to 11 net — two max_nodes tests removed matching the codebase-wide decision, plus new tests
+for no-starvation, per-side-pruning, and same-tick duplicate/meeting detection), `ruff check` clean.
+
+---
+
+## 2026-07-30 — seed/target autocomplete: `/api/suggest` + a dropdown under FROM/TO
+
+The UI-backlog item flagged back on 2026-07-29 (Six Degrees of Wikipedia's live
+autocomplete vs. wikimap's plain-text `#seed`/`#target`, where a typo silently
+dead-ends a run) and reaffirmed after today's title-reliability research session —
+built now rather than deferred further, since it directly sidesteps two of that
+research's failure modes (mistyped/nonexistent titles, landing on a disambiguation
+page) by only ever letting the user pick a real, already-resolved title in the
+first place.
+
+`WikiClient.search_titles(query, limit=SUGGEST_LIMIT)` (`wiki/client.py`) is a new
+third method that bypasses `wikipedia-api`, alongside `get_backlinks` — same
+reason: the library has no search support at all. Uses `list=prefixsearch` directly,
+`psnamespace=0` server-side (the same ns0 rule as `get_links`/`get_backlinks`), and
+`pslimit` server-side rather than slicing a larger result after the fact. New
+`config.SUGGEST_LIMIT = 8`, deliberately NOT a `RunParams` field or published via
+`/api/config`'s bounds — it never reaches an algorithm, so it isn't a contract-1
+search knob, just a plain constant `WikiClient` reads directly (same category as
+`BACKLINK_LIMIT`).
+
+`GET /api/suggest?q=` (`server/app.py`) returns a plain JSON list of titles,
+sharing `/api/page`'s lazy `_wiki_client()` singleton rather than building its own.
+
+Frontend: `#seed`/`#target` are each wrapped in a `.input-wrap` (new, `position:
+relative`, sized to the input alone so the dropdown aligns under it rather than
+under the whole label, which also holds the "From"/"To" text) holding a `<ul
+class="suggestions">`, scrollable via `max-height` + `overflow-y: auto` — the
+"scroll dropdown" the user asked for. `setupAutocomplete()` in `app.js` debounces
+input (200ms, 2-char minimum), fetches `/api/suggest`, and renders results with
+`textContent` (never `innerHTML` — same rule as `log()`/the node panel: real
+Wikipedia titles land in the DOM verbatim). A stale-response guard (compare the
+input's current value against the query a given fetch was issued for) mirrors the
+node-click panel's `openNodeTitle` pattern, just keyed on query text instead of a
+node id. List items use `mousedown` + `preventDefault()` rather than `click`, since
+`blur` (which hides the list) fires before `click` and would otherwise swallow the
+selection. Escape and blur both close it. No keyboard arrow-navigation — out of
+scope for this pass; Enter still submits the form as before, unchanged.
+
+Verified live in Chrome against real Wikipedia: typing "Batm" in FROM surfaced
+"Batman", "Batman Begins", etc. in a scrolling list; typing "Quan" in TO surfaced
+"Quantum mechanics" among others; picking a suggestion filled the field and closed
+the dropdown without triggering a submit; running `Batman -> Quantum mechanics`
+afterward worked end-to-end. Zero console errors throughout.
+
+8 new tests (`TestSearchTitles` in `test_wiki_client.py`, mirroring `TestBacklinks`'
+mocked-`requests.get` pattern; `TestSuggestEndpoint` in `test_server.py`, extending
+the existing `_FakeWikiClient`/`fake_wiki_client` fixture with `search_titles`).
+122 tests green (was 114), `ruff check` clean.
+
+---
+
+## 2026-07-30 — `max_nodes` removed from greedy/astar/default; bfs-only now
+
+Prompted by a live-testing session running TV/movie titles as seeds against
+abstract-concept targets across all four algorithms. `Friends -> Loneliness` on `bfs`
+never got past depth 1: the seed page alone has ~896 outbound links (episode lists,
+cast, "in popular culture"), and since `bfs` has no top-K cap by design, that single
+node's fan-out blew straight through `max_nodes=500` to 898 nodes before the
+between-nodes check ever fired.
+
+Checking whether `max_nodes` was pulling real weight on the other three algorithms
+showed it wasn't. `greedy`/`astar`/`default` all cap every node's fan-out to
+`TOP_K=20` already (decision C), so their own worst case is already bounded by
+`MAX_DEPTH * TOP_K` (≤ 12 × 20 = 240, comfortably under the 500 default) with or
+without `max_nodes`. `max_depth` was already doing the limiting; `max_nodes` was dead
+weight riding along.
+
+Removed the `params.max_nodes` read (and the now-pointless `seen` bookkeeping that
+existed only to feed it) from `greedy.py`, `astar.py`, and `default.py`. `bfs.py` is
+untouched — it's the one algorithm with no per-node cap, and the one that actually
+needs the backstop. `config.py`'s `MAX_NODES`/`MAX_NODES_BOUNDS`/`RunParams.max_nodes`
+all stay (still read by `bfs`, still served via `/api/config`) — comments updated to
+say bfs-only instead of universal. Frontend: the "max nodes" control now dims for
+every algorithm except `bfs` (new `.nodecap` class, toggled in `syncAlgorithmUI()`),
+mirroring how weight W/hop scale already dim for greedy/bfs.
+
+**Does NOT fix the `Friends`/`bfs` case itself** — `bfs` still hits the cap on that
+run, by design; this only removes a cap that wasn't protecting anything on the other
+three. Separately commissioned a research pass into approaches for TV/movie-title
+fan-out and abstract-concept-target runs generally (disambiguation handling, redirect
+resolution, filtering low-signal links, etc.) — see its findings when they land, and
+whatever gets implemented from them, for the actual fix to that class of run.
+
+Five tests removed (two node-cap tests each from `test_astar.py`/`test_default.py`,
+one from `test_greedy.py`) — they tested behavior that's gone by design, not a
+regression. 114 tests green, `ruff check` clean.
+
+---
+
+## 2026-07-30 — `connect/default.py`: bidirectional weighted A*, now `DEFAULT_ALGORITHM`
+
+Fourth Connect algorithm, and the first written to be a deliberate combination of the
+other three: `astar.py`'s top-K-ranked, weighted `f = g + W*h` search (decision C's
+branching cap still applies, unlike `bfs.py`'s uncapped exception), run from both
+`seed` and `target` simultaneously like `bfs.py`. Forward ranks candidates by
+similarity to the target (exactly `astar.py`'s heuristic); backward ranks by
+similarity to the seed, its own natural anchor. Registered in `ALGORITHMS` as
+`"default"` and now `DEFAULT_ALGORITHM` — the app's out-of-the-box choice — because
+for someone who just wants a good route without picking an algorithm, it's usually
+cheaper than one-directional A* (half the effective depth each side has to cover) and
+far less visually explosive than `bfs` (top-K keeps every tick bounded, unlike `bfs`'s
+uncapped ply). NOT provably optimal, doubly so: everything `astar.py`'s docstring says
+about cosine being inadmissible applies on both sides here, and naive bidirectional
+search has its own separate correctness trap (stopping at the first meeting found is
+not guaranteed cheapest, even for an admissible heuristic — `bfs.py`'s docstring
+describes the unweighted version of the same trap). Mitigated the standard way: track
+the cheapest meeting found (`best_total`) and keep expanding whichever frontier could
+still beat it, stopping only once neither can — a practical improvement, not a proof.
+Also carries over, independently per side: `astar.py`'s reopening fix (a strictly
+cheaper rediscovery of an already-expanded page un-closes it) and `bfs.py`'s
+check-the-node-cap-after-not-before-expansion fix (astar.py's before-expansion
+placement is only safe there because its meeting check happens at pop time, fully
+resolved before the cap gate; this file's meeting check happens mid-relaxation, so a
+before-expansion gate could trip on a later tick and block the very expansion that
+would have reported an already-cheaper meeting).
+
+**Design decision, discussed with the user before finishing this file: candidate
+ranking stays anchored to the fixed `seed`/`target` ("front-to-end"), not switched to
+chasing the opposing search's current frontier node ("front-to-front").** Front-to-front
+is the more powerful idea on paper, but naive versions (comparing to a single "current"
+node on the other side) are known-unreliable in practice — that one node is a poor
+proxy for the actual eventual meeting point, especially early in a run when one side
+has barely started, and it costs the same one extra similarity lookup either way, so
+there's no efficiency case for it. The mechanism that actually makes the two searches
+*meet* was already separate from ranking regardless — the structural check (a page's
+cost becoming known on both sides) plus `best_total` pruning — so this decision only
+concerns which page a side's own candidates get compared against, not how meetings are
+detected.
+
+**Found and fixed before this file was considered done: a broken test, not an
+algorithm bug.** `test_backward_search_contributes_a_shorter_meeting` asserted backward
+must expand at least one node, using a graph where forward's own links already form a
+complete route to the target. Traced by hand: both frontiers start with an identical
+f-value on tick 1 (both seeded from the same `seed`-`target` similarity), and the
+tie-break rule (`top_f_forward <= top_f_backward`) favors forward on ties — so forward
+goes first, completes the route in 2 hops, and the resulting `best_total` beats
+backward's still-untouched initial frontier value before backward ever gets a turn.
+The reported path was correct; the test's premise (that backward's contribution was
+necessary) simply didn't hold for that graph. Fixed by reworking the scenario so
+forward's own link graph is a dead end and the route only closes through backward's
+independently-discovered backlink.
+
+⚠️ **Noted, not fixed — same pattern as the deferred `LinkCache._lookup` atomic-write
+item.** The tie-break rule above deterministically favors forward on exact ties,
+including on every run's very first tick (both sides start from the same similarity
+value, by construction). This doesn't threaten correctness (`best_total` pruning still
+guards against a wrong early stop, proven by `TestDoesNotStopAtTheFirstMeeting`), but
+it could starve backward search in symmetric or near-symmetric graphs, undercutting
+the "half the effective depth each side has to cover" efficiency case this file's
+docstring makes for itself. Not fixed now — flagged so a future session doesn't have
+to rediscover it before deciding whether it's worth alternating on ties.
+
+This file had been added to the working tree by a concurrent session without STATUS/
+HISTORY entries or a passing test suite; this entry, the STATUS update, and the test
+fix close that gap. 119 fast tests green (was 118 with the one failure), `ruff check`
+clean, no other assertion changed.
+
+## 2026-07-29 — auto-fit fix: one `fit()` per Step chases a moving target and loses
+
+User-reported live regression right after auto-fit shipped: it "isn't doing shit" during a real
+Connect run. Two things were wrong.
+
+**The real bug.** `scheduleFit()` only fired from inside `applyStep()` — once per Step. A Step
+marks the instant a node/edge is *added*, but forceAtlas2 physics keeps pushing the whole layout
+outward for a while afterward as it settles, and Steps arrive with real network latency between
+them (a cold run's Wikipedia fetches are seconds apart — see the roadmap-step-5 entry below).
+That gap is plenty of time for physics to drift the graph back out past whatever `scheduleFit()`
+last framed, and nothing re-fit the camera again until the *next* Step arrived — by which point
+physics had already been quietly overflowing the frame for seconds. One fit-per-arrival chases a
+moving target and loses. Fixed with a `setInterval(scheduleFit, 400)` that runs for the lifetime
+of a live run (started alongside the `EventSource` in the submit handler, cleared inside `stop()`),
+so the camera tracks the settling itself, not just the moment a node lands. `scheduleFit()` was
+already cheap to over-call — `fitPending` + `requestAnimationFrame` no-ops it when there's nothing
+to do — so polling it costs nothing. A trailing `setTimeout(scheduleFit, 400)` after the `done`
+handler's `stop()` catches whatever the layout does in the last fraction of a second once the
+interval that was tracking it gets cleared.
+
+**A smaller bug caught alongside it.** `network.fit()`'s animation option is `easingFunction`, not
+`easing` — I'd written the latter. vis-network drops unrecognised option keys silently rather than
+erroring, so this cost nothing *visible* on its own (the fit still ran, just without the intended
+custom easing), but it was still wrong and is fixed now.
+
+Frontend-only, no Python touched, 106 tests still green (this file has no JS test coverage — see
+the `sizeFor`/`d-sizeBy` entry below for why). Confirmed via `curl` that the already-running dev
+server is serving the fixed `app.js` (static files, read straight off disk — no restart needed).
+Still not manually clicked-through in a real browser this session (`claude-in-chrome` extension
+declined) — the user is verifying directly in their own browser tab.
+
+---
+
+## 2026-07-29 — `connect/astar.py`: fixed the closed-list bug behind the inadmissible-heuristic gap
+
+The user asked to hold off on Connect's display/UI work and instead make A* find better paths —
+specifically the gap STATUS already flagged: A* solved `Cat → Astronomy` in 3 hops when a 2-hop
+route existed, blamed generally on cosine similarity being an inadmissible heuristic (it can
+overestimate true remaining hops, so nothing textbook guarantees optimality). That framing was
+correct but incomplete — tracing the code found a second, *concrete* bug riding on top of the
+inadmissibility, and only the second one was fixable without abandoning the semantic heuristic
+(decision B locks it; true BFS distance during a live Connect run is infeasible).
+
+**The bug:** textbook A* closes a node the instant it's first popped and never looks at it again —
+sound only because a *consistent* heuristic proves the first pop already found that node's
+true-cheapest cost. Cosine-to-target has no such property. The old code closed nodes permanently
+anyway (`if link in expanded: continue`, unconditional), so a page reachable both via a route that
+merely *looks* cheap (low `h`, because it scores well against the target) and, later, via a
+genuinely cheaper route in real hops, would get closed on the first (worse) route and then have
+the second (better) route's discovery silently thrown away — not "the estimate was imperfect," but
+"a strictly better answer was found and discarded by a stale invariant." Traced by hand with a
+worked example: `Fast1`/`Fast2` score 0.95 (tiny `h`, so A* dives down them fast) reach `X` at depth
+3 and close it; only afterwards does unappealing-looking `Slow` (score 0.3) get expanded and reach
+`X` at depth 1 — a strictly shorter route through the same node, discarded by the old code.
+
+**The fix:** reopening. A strictly cheaper rediscovery of an already-closed node now calls
+`expanded.discard(link)` to un-close it, so it gets popped and re-expanded from the better cost —
+and so does everything reachable through it. This is the standard fix for A* over a heuristic
+that isn't provably consistent; it is bounded (costs only ever move down, in small integer hop
+counts capped by `max_depth`, so a page reopens at most a handful of times) and cheap (`get_links`
+on an already-seen title hits the in-memory cache layer, not the network).
+
+**What this does NOT fix, on purpose:** the run still stops at the *first* pop of the target
+itself. Reopening guarantees every *intermediate* page's recorded cost is the best the search has
+found so far, but proving the target's first-pop cost is the true minimum — rather than merely the
+best found before stopping — needs an admissible heuristic (a real lower bound) or exhaustive
+search. That's exactly `bfs.py`'s job (the bidirectional ground-truth checker), not this file's;
+duplicating it here would mean rebuilding `bfs.py` inside `astar.py`. The "NOT OPTIMAL" framing in
+the module docstring stays — it's still true — but now says precisely which gap remains closed
+(per-page cost propagation) and which stays open (target-stopping isn't proven minimal).
+
+Proven with a hand-traced fake-graph repro before touching the code, then encoded as
+`test_a_cheaper_route_to_an_already_expanded_node_still_wins` (asserts the 3-hop route is now
+found instead of the old 4-hop one) and
+`test_reopened_node_is_expanded_again_from_its_cheaper_cost` (asserts the reopened node is
+genuinely reprocessed — appears in the expansion order twice — not just relabelled). 106 fast
+tests green (104 + these 2), `ruff check` clean, no existing assertion touched or changed.
+
+## 2026-07-29 — frontend: auto-fit camera + a disabled Connect/Explore toggle in the header
+
+Two small, independent frontend changes, requested together but unrelated in code.
+
+**Auto-fit.** The graph grows live during a run and the camera never moved to keep up — the
+user had to scroll-zoom out by hand every few nodes. Added `scheduleFit()` in `app.js`, called
+from the end of `applyStep()` whenever a Step actually added a node or edge (note-only Steps like
+"reached target" skip it — nothing new to fit to). It calls `network.fit({ animation: {...} })`,
+vis-network's built-in "zoom/pan to show every node" call. Debounced through
+`requestAnimationFrame` so a burst of Steps arriving faster than one frame (a warm cache can
+replay a whole run in well under a second) collapses to one `fit()` call instead of fighting
+itself once per Step. Gated behind a new `#d-autoFit` checkbox (Display panel, default on) —
+same escape-hatch pattern as the existing `Physics` checkbox — so a user who's manually
+positioned the view isn't fought by the camera snapping back on the next tick.
+
+**Mode toggle.** Added a Connect/Explore segmented control, centered in the header (new 3-column
+CSS grid: `1fr auto 1fr`, replacing the old flex row — centering independent of how wide "wikimap"
+and the algorithm label on the other side happen to be). Explore ships **disabled** —
+`explore/bfs.py`/`explore/beam.py` are still one-line docstring placeholders, there is no server
+route for it, and the 2026-07-26 replan explicitly locked "finish Connect before starting
+Explore." Wiring the toggle to a mode with no backend would mean it silently does nothing on
+click, which is worse than a greyed-out button that says why (`title="Not built yet"`). Confirmed
+with the user before building it this way rather than guessing — the alternative read was
+"build Explore's backend now too," which would have reversed a locked roadmap decision on a
+casual UI request.
+
+Both changes are frontend-only, no `config.py`/contract/server changes. 106 tests green (the
+other 2 beyond the last entry's 104 are from `astar.py`/`test_astar.py` work happening in
+parallel in another terminal this session, not this entry). Not manually browser-tested — no
+`claude-in-chrome` tooling this session (user declined the extension) — same owed-verification
+caveat as the last two frontend entries.
+
+---
+
+## 2026-07-29 — frontend: node size can now be driven by score/depth, not just one flat slider
+
+First item off the UI-refactor backlog gathered while researching Six Degrees of Wikipedia /
+Connected Papers / Obsidian's graph view (see that session's note — condensed version: Connected
+Papers encodes node size by a real data field, e.g. citation count, in addition to colour; wikimap's
+`#d-nodeSize` was a single uniform multiplier even though every `Node` already carries `score` and
+`depth`).
+
+Added `sizeFor(node)` in `app.js`, mirroring the existing `nodeColor(node)` split (`colorBy` already
+picks between score/depth for colour): a new `#d-sizeBy` select (`uniform` / `score` / `depth`,
+default `uniform`) now decides whether `#d-nodeSize`'s slider value is applied flat to every node or
+scaled per node — `scoreSizeScale` maps cosine `[0,1]` to a `[0.6x, 1.5x]` multiplier, `depthSizeScale`
+decays with `abs(depth)` (abs matters because `bfs`'s backward frontier carries negative depth) down
+to a `0.5x` floor. Both the live `applyStep` path and the `applyDisplay` resize-on-slider-change path
+now call the same helper, so switching `sizeBy` mid-run or after a run both work.
+
+Deliberately frontend-only, no `config.py`/contract changes — `Node.score`/`Node.depth` already
+existed on the wire for colour-by, this just reads the same fields for a second purpose. Default is
+`uniform`, so no existing behavior changes unless the new control is touched. 104 tests still green
+(no Python file touched). Not manually click-tested in a browser by the agent that built it — no
+`claude-in-chrome` tooling was available this session (user declined the extension) — confirmed only
+that the running dev server (already up on `:8000` in the user's other terminal) is serving the
+edited `index.html`/`app.js`. Visual confirmation is still owed, same caveat as the node-click panel
+before it.
+
+---
+
+## 2026-07-29 — review pass on `bfs.py`: stale test docstring, `max_depth` semantics decided explicitly
+
+Caught in a review of the previous entry's work, not while building it. Two findings:
+
+- `test_backward_search_finds_a_meeting_forward_alone_would_take_longer_to_reach` (test_bfs.py)
+  described its own outcome using "the smaller-queue rule" — that's Attempt 2's logic (frontier
+  *size*), the one the module docstring documents as the second live-caught bug, not the
+  depth-level rule that actually shipped. The test's assertions were always correct; only the
+  prose explaining *why* was describing a discarded design. Traced by hand to confirm what's
+  really going on: backward gets exactly one turn before the tie flips back to forward, and the
+  meeting is found mid-*forward*-expansion, not during a backward turn as the old docstring
+  claimed. Fixed to describe the depth-level rule.
+- `max_depth` was applied independently to `bfs`'s forward and backward frontiers with no comment
+  on what that implies: for greedy/A* the knob caps one directional walk (so it IS the max path
+  length); for `bfs` it caps each side, so the real reachable path length is `2 * max_depth`, not
+  `max_depth`. Same slider, different meaning depending on which algorithm is selected, and
+  nothing said so. **Decided (not changed): keep it per-side, as it already behaved** — halving it
+  to match greedy/A*'s meaning would make bidirectional BFS unable to certify the very depths
+  greedy/A* are allowed to search to, which breaks its entire job as their ground-truth checker.
+  Documented explicitly in the module docstring instead of left implicit.
+
+No code behavior changed except the docstring addition; no existing assertion changed.
+
+---
+
 ## 2026-07-29 — `bfs.py`'s `max_nodes` cap was checked once per whole ply, not per node
 
 Found while reasoning about why an uncapped, unranked search like `bfs` (deliberately not

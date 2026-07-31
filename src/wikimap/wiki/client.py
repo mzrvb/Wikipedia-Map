@@ -4,9 +4,10 @@ Rules: namespace 0 only, filtered with `p.ns == 0` (never a colon-in-title check
 descriptive User-Agent from .env as `appname/version (contact)`; retry with a small
 delay on failure. Synchronous (`wikipedia-api`) until caching proves insufficient.
 
-Outbound links go through `wikipedia-api`. Backlinks do NOT — see `get_backlinks`
-for why the library's version is unusable here. Both still live in this one class,
-so the rule "nothing else talks to Wikipedia directly" is intact.
+Outbound links go through `wikipedia-api`. Backlinks and title search do NOT — see
+`get_backlinks`/`search_titles` for why (the library either can't do it at all, or
+can't do it at our scale). All three still live in this one class, so the rule
+"nothing else talks to Wikipedia directly" is intact.
 """
 
 import logging
@@ -17,7 +18,7 @@ import requests
 import wikipediaapi
 from dotenv import load_dotenv
 
-from wikimap.config import BACKLINK_LIMIT
+from wikimap.config import BACKLINK_LIMIT, SUGGEST_LIMIT
 
 load_dotenv()
 
@@ -113,6 +114,61 @@ class WikiClient:
                     return None
                 time.sleep(self._delay)
         return None
+
+    def search_titles(self, query: str, limit: int = SUGGEST_LIMIT) -> list[str]:
+        """Return up to `limit` real article titles matching `query` as a prefix —
+        the data behind the seed/target autocomplete dropdown.
+
+        Bypasses wikipedia-api the same way get_backlinks does and for the same
+        reason: the library has no search support at all, so this is a direct
+        `list=prefixsearch` call. Namespace filtering is server-side (`psnamespace=0`,
+        the same ns0 rule as get_links/get_backlinks) rather than fetched-then-
+        filtered locally, and the result count is capped server-side via `pslimit`
+        rather than sliced after the fact.
+
+        Retries on transient failures; returns [] once retries are exhausted, same
+        contract as get_links/get_backlinks — a real bug and "no matches" both come
+        back falsy, and the log is what tells them apart. Unlike those two this
+        drives an interactive dropdown while the user is mid-keystroke, so the
+        retry delay is a real UX cost on failure; kept anyway for consistency with
+        the rest of the class rather than growing a special case.
+        """
+        params = {
+            "action": "query",
+            "list": "prefixsearch",
+            "pssearch": query,
+            "pslimit": limit,
+            "psnamespace": 0,  # ns0 server-side — same rule as get_links/get_backlinks
+            "format": "json",
+            "formatversion": 2,
+        }
+
+        for attempt in range(1, self._retries + 1):
+            try:
+                response = requests.get(
+                    self._api_url,
+                    params=params,
+                    headers={"User-Agent": self._user_agent},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                return [
+                    entry["title"]
+                    for entry in payload.get("query", {}).get("prefixsearch", [])
+                ]
+            except Exception:
+                logger.warning(
+                    "search_titles(%r) attempt %d/%d failed",
+                    query,
+                    attempt,
+                    self._retries,
+                    exc_info=True,
+                )
+                if attempt == self._retries:
+                    return []
+                time.sleep(self._delay)
+        return []
 
     def get_backlinks(self, title: str, limit: int = BACKLINK_LIMIT) -> list[str]:
         """Return pages that link TO `title` (ns0 only), capped at `limit`.

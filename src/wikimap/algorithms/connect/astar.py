@@ -31,6 +31,25 @@ wildly optimistic. This is a well-directed search, not a proof of the shortest p
 Decision B already accepted an estimate over ground truth; the guarantee does not
 sneak back in just because the algorithm is called A*.
 
+REOPENING, fixed 2026-07-29. Textbook A* closes a node the first time it's popped and
+never revisits it — sound only because a *consistent* heuristic guarantees the first
+pop already found that node's true-cheapest cost. Cosine has no such guarantee, so the
+old code (closing nodes permanently anyway) had a concrete, provable bug: a page could
+be reached first via a costly route that merely *looked* close to the target, get
+closed, and then have a genuinely cheaper route to it discovered later and silently
+discarded — this is almost certainly what produced the live "solved in 3 hops where a
+2-hop route existed" result noted in STATUS. Fixed by reopening: finding a strictly
+cheaper route to an already-closed page now un-closes it (`expanded.discard`), so the
+better route still wins. See `test_a_cheaper_route_to_an_already_expanded_node_still_wins`
+in test_astar.py for a worked repro. This does NOT make the search fully optimal —
+the *first* time the target itself is popped, the run stops immediately, and an even
+cheaper route to the target could in principle still be sitting undiscovered deeper in
+the frontier. Closing that last gap means proving no cheaper path can exist, which
+needs an admissible heuristic (or exhaustive search) — that's `bfs.py`'s job, not this
+file's. What reopening buys is: every path A* *does* report is built from the best
+cost-to-each-intermediate-page the search ever found, instead of silently freezing in
+whichever arrived first.
+
 Shares greedy's shape everywhere else: it reads its knobs from the `RunParams` handed
 to `run()` (contract 1), caps branching to the top-K links by similarity to the target
 (decision C), and yields one `Step` per expansion (contract 2) knowing nothing about
@@ -74,14 +93,16 @@ class AStarConnect(ConnectAlgorithm):
                 seed,
             )
         ]
-        # Best known hop-count to each page. Doubles as "have we seen this at all" —
-        # and therefore as the node counter. Every link in a `top` slice ends up a key
-        # here (either it was already known, which is why it got skipped, or it gets
-        # added below), so len() is exactly the number of DISTINCT nodes emitted. That
-        # is what `max_nodes` is meant to cap; a running `+= len(top)` would re-count
-        # pages that were merely re-encountered and trip the cap early.
+        # Best known hop-count to each page. Doubles as "have we seen this at all",
+        # which is what the `if link in cost_from_seed and ...` skip-check below relies
+        # on to avoid queuing worse duplicates of a page already reached more cheaply.
         cost_from_seed = {seed: 0}
         came_from: dict[str, str] = {}
+        # NOT a permanent closed-list — `expanded.discard(...)` below reopens a page
+        # when a cheaper route to it is found later. A true closed list is only sound
+        # when the heuristic is *consistent*; cosine-to-target is a semantic guess
+        # (decision B) with no such guarantee, so "first popped" is not "best possible"
+        # the way it would be for textbook A*.
         expanded: set[str] = set()
 
         # Seed first, so it's born with real attributes rather than being conjured
@@ -94,8 +115,10 @@ class AStarConnect(ConnectAlgorithm):
         while frontier:
             _, _, current = heapq.heappop(frontier)
 
-            # A page can sit in the heap several times, once per route that reached it
-            # at a better cost. Only the first pop matters; the rest are stale.
+            # A page can sit in the heap several times: once per route that reached
+            # it, PLUS possibly again after being reopened. Only the freshest pop
+            # (the one matching current `expanded` state) does anything; the rest
+            # are stale leftovers from routes a cheaper one has since superseded.
             if current in expanded:
                 continue
             expanded.add(current)
@@ -115,13 +138,6 @@ class AStarConnect(ConnectAlgorithm):
                 # waiting, so skip this one and keep popping.
                 continue
 
-            if len(cost_from_seed) >= params.max_nodes:
-                yield Step(
-                    note=f"stopped: node cap at {current!r} "
-                    f"(depth {depth}, {len(cost_from_seed)} nodes)"
-                )
-                return
-
             # Same expansion as greedy: fetch every link, score each against the
             # TARGET (the Connect anchor), keep the top-K. Cost here is O(outdegree)
             # regardless of K — K decides how many candidates enter the frontier.
@@ -136,15 +152,18 @@ class AStarConnect(ConnectAlgorithm):
             step_cost = depth + 1
             queued = 0
             for link, similarity in top:
-                if link in expanded:
-                    continue
                 # Only queue a page if this route reaches it in fewer hops than any
                 # route already found. Without this the heap fills with worse
-                # duplicates of pages we already have a better path to.
+                # duplicates of pages we already have a better path to. Deliberately
+                # NOT gated on `link in expanded` — cosine is a guess, not a lower
+                # bound (decision B), so a page can be closed via a costlier route
+                # before a cheaper one is even found. Reopening it (below) is what
+                # lets that cheaper route still win instead of being silently lost.
                 if link in cost_from_seed and cost_from_seed[link] <= step_cost:
                     continue
                 cost_from_seed[link] = step_cost
                 came_from[link] = current
+                expanded.discard(link)
                 # `similarity` is reused from the ranking above — computing h costs no
                 # extra embedding, which is the expensive part of every tick.
                 f = step_cost + params.heuristic_weight * hops_remaining(similarity)

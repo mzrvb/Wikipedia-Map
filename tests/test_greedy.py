@@ -121,46 +121,6 @@ class TestCaps:
         assert "hit cap" in steps[-1].note
         assert len(_move_sources(steps)) == config.MAX_DEPTH  # exactly MAX_DEPTH hops
 
-    def test_node_cap_counts_distinct_pages_not_repeat_sightings(self):
-        """max_nodes caps how many pages get DRAWN, so it must count each once.
-
-        "Shared" is linked from every page, so it lands in every single fan-out — but
-        it is one circle on screen, not fifty. The old `node_count += len(top)` added
-        the whole slice each tick, re-counting Shared every time, so the cap tripped
-        early and the number in the note didn't match the graph.
-
-        Note the params: max_nodes=20 because MAX_NODES_BOUNDS floors there and
-        RunParams *clamps* rather than raising — asking for 5 silently gives you 20.
-        max_depth=12 so the depth cap can't trip first and mask what's under test.
-        """
-        # Each page: one chain link (highest score, so greedy always advances), three
-        # fresh dead-ends, and Shared. Four new pages per tick outruns the depth cap.
-        links = {
-            f"N{i}": [f"N{i + 1}", f"X{i}a", f"X{i}b", f"X{i}c", "Shared"]
-            for i in range(50)
-        }
-        scores = (
-            {f"N{i}": 0.9 for i in range(51)}
-            | {f"X{i}{s}": 0.5 for i in range(50) for s in "abc"}
-            | {"Shared": 0.1}
-        )
-
-        steps = _run(
-            links,
-            scores,
-            seed="N0",
-            target="T",
-            params=RunParams(max_nodes=20, max_depth=12),
-        )
-
-        assert "hit cap" in steps[-1].note
-        # The reported figure is the distinct pages emitted, not the running sum of
-        # slice lengths — which is what makes the note trustworthy against the canvas.
-        emitted = {n.id for s in steps for n in s.nodes}
-        assert f"{len(emitted)} nodes" in steps[-1].note
-        # Shared really did recur, or the test proves nothing.
-        assert sum("Shared" in {n.id for n in s.nodes} for s in steps) > 1
-
 
 class TestStepShape:
     def test_yields_wellformed_steps(self):
