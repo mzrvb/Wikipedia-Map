@@ -9,6 +9,13 @@ Update it alongside this file — see [Working practice](#working-practice).
 
 ## STATUS
 
+**`default.py` perf review — done (2026-08-02).** Three optimizations, no behavior change:
+`EmbeddingCache.similarity_many` no longer double-embeds a title that appears more than once in
+one batch (a hub page linked from several frontier parents in the same tick), `default.py`'s
+`ThreadPoolExecutor` is now created once for the whole run instead of once per tick, and
+`_rank_and_cap` uses `heapq.nlargest` instead of a full sort. 77 fast tests green (was 76, +1),
+`ruff check` clean, no existing assertion changed. Full reasoning in HISTORY.
+
 **Frontend polish pass 2026-07-31 — winning path highlighted, five colour-by modes, a
 transit-map run log, light theme, and a reworded run form.** Five separate, mostly
 frontend-only changes made in one session, landing on top of the `default.py`-only state

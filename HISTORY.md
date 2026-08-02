@@ -9,6 +9,52 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## 2026-08-02 — `default.py` perf review: three optimizations, no behavior change
+
+A user-requested review of the only remaining Connect algorithm, looking specifically for
+optimizations rather than bugs. Three fixes, all verified non-destructive (77 fast tests green,
+was 76; `ruff check` clean; no existing assertion changed).
+
+**1. `EmbeddingCache.similarity_many` was embedding duplicate cache-misses twice
+(`embed.py`).** Its miss-detection loop checked `title in self._memory` *before* the batch
+write happened, so a title appearing more than once in the input list — a never-before-seen hub
+page linked from several of `default.py`'s frontier parents in the same tick, which is common on
+real Wikipedia — landed in `misses` once per occurrence. `Embedder.embed_batch` (the actual model
+forward pass, the expensive step this whole cache exists to minimize) then computed it more than
+once, and each duplicate re-wrote the same disk file. Fixed with `dict.fromkeys(titles)` at the
+top of the loop — one line, dedups while preserving order, protects every caller not just
+`default.py`. New regression test (`test_similarity_many_dedupes_repeated_titles_before_batching`)
+extends `test_embed.py`'s `_FakeEmbedder` with an `embed_batch` that call-counts, proving a
+triple-repeated title reaches the model exactly once.
+
+**2. `ThreadPoolExecutor` was created and torn down every tick (`default.py`).** The
+`with ThreadPoolExecutor(...) as pool:` sat *inside* the `while` loop, so each of up to
+`max_depth` (≤12) ticks spun up and joined a fresh batch of OS threads. Neither frontier ever
+exceeds `top_k` after the first tick (both start at 1, then `_rank_and_cap` caps them), so a
+single pool sized `2 * params.top_k`, created once before the loop and reused every tick, does
+identical work with far less thread churn. This meant widening the `with` block to wrap the
+entire `while` loop rather than sit inside it — a bigger diff than the other two fixes, but a
+pure reindent; no logic moved.
+
+**3. `_rank_and_cap` full-sorted when it only needed the top K (`default.py`).**
+`sorted(...)[:k]` is O(n log n) over every deduped candidate — a ply's candidate count can run
+into the low thousands (top_k frontier nodes × ~hundreds of links each) while k is capped at 20
+(`TOP_K_BOUNDS`). Swapped for `heapq.nlargest(k, ..., key=...)`, which the stdlib docs describe
+as equivalent to `sorted(reverse=True)[:k]` (same tie-breaking), just O(n log k) instead.
+
+**Also, while touching the meeting-detection line already being reindented for fix #2:**
+`set(backward_depth)` / `set(forward_depth)` became `backward_depth.keys()` /
+`forward_depth.keys()` — dict key-views already support `&` directly, so this was an unnecessary
+set allocation every tick. Frontier sizes are small enough (≤240 total) that this one is noise on
+its own; only changed because the surrounding lines were already being touched.
+
+Not changed: nothing about ranking, pruning, termination, or the Step contract. This was reviewed
+alongside two other sessions running in parallel on frontend work in the same working tree
+(`server/static/app.js` showed as modified in `git status` but was never touched by this pass —
+left alone and excluded from this commit).
+
+---
+
 ## 2026-07-31 — Frontend polish pass: path highlighting, colour-by modes, transit-map log, light theme
 
 Five changes, done in sequence in one session, each requested separately but building on the

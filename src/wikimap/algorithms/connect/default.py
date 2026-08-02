@@ -86,6 +86,7 @@ truth), but it's gone now, and astar remains the one algorithm that can run away
 without a node cap.
 """
 
+import heapq
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 
@@ -133,19 +134,23 @@ class DefaultConnect(ConnectAlgorithm):
         )
 
         depth = 0
-        while (forward_frontier or backward_frontier) and depth < params.max_depth:
-            depth += 1
+        # One pool for the whole run, not one per tick. Neither frontier ever
+        # exceeds top_k (capped by _rank_and_cap every tick after the first, where
+        # each side starts at exactly 1), so 2*top_k workers is always enough —
+        # sizing it once and reusing it avoids spinning up and joining a fresh
+        # batch of OS threads on every one of up to max_depth ticks.
+        with ThreadPoolExecutor(max_workers=max(2 * params.top_k, 1)) as pool:
+            while (forward_frontier or backward_frontier) and depth < params.max_depth:
+                depth += 1
 
-            # Fetch every frontier node's links/backlinks concurrently (threads —
-            # these are blocking network calls, and Python releases the GIL while
-            # a thread waits on socket I/O, so this genuinely overlaps the waiting
-            # instead of queuing one page's fetch behind the last). Forward and
-            # backward parents are always disjoint here (a shared title would have
-            # already been caught as a same-tick meeting last iteration and ended
-            # the run), so no two threads ever race on the same cache entry.
-            with ThreadPoolExecutor(
-                max_workers=max(len(forward_frontier) + len(backward_frontier), 1)
-            ) as pool:
+                # Fetch every frontier node's links/backlinks concurrently — these
+                # are blocking network calls, and Python releases the GIL while a
+                # thread waits on socket I/O, so this genuinely overlaps the
+                # waiting instead of queuing one page's fetch behind the last.
+                # Forward and backward parents are always disjoint here (a shared
+                # title would have already been caught as a same-tick meeting last
+                # iteration and ended the run), so no two threads ever race on the
+                # same cache entry.
                 forward_fetches = {
                     parent: pool.submit(self._link_cache.get_links, parent)
                     for parent in forward_frontier
@@ -161,100 +166,102 @@ class DefaultConnect(ConnectAlgorithm):
                     parent: future.result() for parent, future in backward_fetches.items()
                 }
 
-            forward_candidates = [
-                (link, parent)
-                for parent in forward_frontier
-                for link in forward_links_by_parent[parent]
-                if link not in forward_depth
-            ]
-            backward_candidates = [
-                (link, parent)
-                for parent in backward_frontier
-                for link in backward_links_by_parent[parent]
-                if link not in backward_depth
-            ]
+                forward_candidates = [
+                    (link, parent)
+                    for parent in forward_frontier
+                    for link in forward_links_by_parent[parent]
+                    if link not in forward_depth
+                ]
+                backward_candidates = [
+                    (link, parent)
+                    for parent in backward_frontier
+                    for link in backward_links_by_parent[parent]
+                    if link not in backward_depth
+                ]
 
-            # Batched, not one similarity() call per candidate — the whole ply's
-            # unseen titles go into a single model.encode(list) forward pass.
-            forward_scores = self._embed_cache.similarity_many(
-                [link for link, _ in forward_candidates], target
-            )
-            backward_scores = self._embed_cache.similarity_many(
-                [link for link, _ in backward_candidates], seed
-            )
-
-            forward_survivors = _rank_and_cap(
-                (
-                    (link, parent, forward_scores[link])
-                    for link, parent in forward_candidates
-                ),
-                params.top_k,
-            )
-            backward_survivors = _rank_and_cap(
-                (
-                    (link, parent, backward_scores[link])
-                    for link, parent in backward_candidates
-                ),
-                params.top_k,
-            )
-
-            forward_links = {link for link, _, _ in forward_survivors}
-            backward_links = {link for link, _, _ in backward_survivors}
-            # Three sources, all real meetings: a side's new find landing on a page
-            # the OTHER side already knew (from an earlier ply), in either
-            # direction, plus both sides independently finding the same page in
-            # this SAME tick.
-            meetings = (
-                (forward_links & set(backward_depth))
-                | (backward_links & set(forward_depth))
-                | (forward_links & backward_links)
-            )
-
-            new_nodes, new_edges = [], []
-            for link, parent, similarity in forward_survivors:
-                forward_depth[link] = depth
-                forward_parent[link] = parent
-                new_nodes.append(Node(id=link, score=similarity, depth=depth))
-                new_edges.append(Edge(source=parent, target=link))
-            for link, parent, similarity in backward_survivors:
-                backward_depth[link] = depth
-                backward_parent[link] = parent
-                new_nodes.append(Node(id=link, score=similarity, depth=-depth))
-                new_edges.append(Edge(source=link, target=parent))
-
-            yield Step(
-                nodes=new_nodes,
-                edges=new_edges,
-                # "round", not "ply" — the internal reasoning in this module's
-                # docstring still says "ply" (borrowed from bfs.py's own history,
-                # accurate to how that design evolved), but that word implies
-                # one-side-at-a-time turn-taking to a reader who hasn't read the
-                # docstring, which is backwards: both sides advance in this exact
-                # same tick, together. The user-facing text says what it looks
-                # like, not where the term came from.
-                note=f"round {depth}: {len(forward_survivors)} fwd "
-                f"+ {len(backward_survivors)} bwd",
-            )
-
-            if meetings:
-                # Computed AFTER the commit loops above, so both dicts already
-                # reflect this tick's own discoveries — every meeting candidate's
-                # depth on both sides is guaranteed to be present.
-                meeting = min(
-                    meetings, key=lambda m: forward_depth[m] + backward_depth[m]
+                # Batched, not one similarity() call per candidate — the whole
+                # ply's unseen titles go into a single model.encode(list) forward
+                # pass.
+                forward_scores = self._embed_cache.similarity_many(
+                    [link for link, _ in forward_candidates], target
                 )
-                path = _reconstruct(
-                    forward_parent, backward_parent, seed, target, meeting
+                backward_scores = self._embed_cache.similarity_many(
+                    [link for link, _ in backward_candidates], seed
                 )
+
+                forward_survivors = _rank_and_cap(
+                    (
+                        (link, parent, forward_scores[link])
+                        for link, parent in forward_candidates
+                    ),
+                    params.top_k,
+                )
+                backward_survivors = _rank_and_cap(
+                    (
+                        (link, parent, backward_scores[link])
+                        for link, parent in backward_candidates
+                    ),
+                    params.top_k,
+                )
+
+                forward_links = {link for link, _, _ in forward_survivors}
+                backward_links = {link for link, _, _ in backward_survivors}
+                # Three sources, all real meetings: a side's new find landing on a
+                # page the OTHER side already knew (from an earlier ply), in
+                # either direction, plus both sides independently finding the
+                # same page in this SAME tick.
+                meetings = (
+                    (forward_links & backward_depth.keys())
+                    | (backward_links & forward_depth.keys())
+                    | (forward_links & backward_links)
+                )
+
+                new_nodes, new_edges = [], []
+                for link, parent, similarity in forward_survivors:
+                    forward_depth[link] = depth
+                    forward_parent[link] = parent
+                    new_nodes.append(Node(id=link, score=similarity, depth=depth))
+                    new_edges.append(Edge(source=parent, target=link))
+                for link, parent, similarity in backward_survivors:
+                    backward_depth[link] = depth
+                    backward_parent[link] = parent
+                    new_nodes.append(Node(id=link, score=similarity, depth=-depth))
+                    new_edges.append(Edge(source=link, target=parent))
+
                 yield Step(
-                    note=f"reached {target!r} in {len(path) - 1} hops "
-                    f"(met at {meeting!r}): {' -> '.join(path)}",
-                    path=path,
+                    nodes=new_nodes,
+                    edges=new_edges,
+                    # "round", not "ply" — the internal reasoning in this module's
+                    # docstring still says "ply" (borrowed from bfs.py's own
+                    # history, accurate to how that design evolved), but that word
+                    # implies one-side-at-a-time turn-taking to a reader who
+                    # hasn't read the docstring, which is backwards: both sides
+                    # advance in this exact same tick, together. The user-facing
+                    # text says what it looks like, not where the term came from.
+                    note=f"round {depth}: {len(forward_survivors)} fwd "
+                    f"+ {len(backward_survivors)} bwd",
                 )
-                return
 
-            forward_frontier = [link for link, _, _ in forward_survivors]
-            backward_frontier = [link for link, _, _ in backward_survivors]
+                if meetings:
+                    # Computed AFTER the commit loops above, so both dicts
+                    # already reflect this tick's own discoveries — every
+                    # meeting candidate's depth on both sides is guaranteed to
+                    # be present.
+                    meeting = min(
+                        meetings, key=lambda m: forward_depth[m] + backward_depth[m]
+                    )
+                    path = _reconstruct(
+                        forward_parent, backward_parent, seed, target, meeting
+                    )
+                    yield Step(
+                        note=f"reached {target!r} in {len(path) - 1} hops "
+                        f"(met at {meeting!r}): {' -> '.join(path)}",
+                        path=path,
+                    )
+                    return
+
+                forward_frontier = [link for link, _, _ in forward_survivors]
+                backward_frontier = [link for link, _, _ in backward_survivors]
 
         yield Step(note=f"exhausted: no route to {target!r} within the caps")
 
@@ -268,17 +275,21 @@ def _rank_and_cap(
     A link can now be discovered from more than one frontier node in the same ply,
     since a whole frontier expands per tick instead of one node — that duplication
     never existed in the old one-node-per-tick design.
+
+    Uses `heapq.nlargest` rather than `sorted(...)[:k]` — a ply can hold a few
+    thousand deduped candidates while k is at most 20 (TOP_K_BOUNDS), and
+    `nlargest` is documented as equivalent to `sorted(reverse=True)[:k]` (same
+    tie-breaking) but does it in O(n log k) instead of sorting the whole list.
     """
     best: dict[str, tuple[str, float]] = {}
     for link, parent, similarity in candidates:
         if link not in best or similarity > best[link][1]:
             best[link] = (parent, similarity)
-    ranked = sorted(
+    return heapq.nlargest(
+        k,
         ((link, parent, similarity) for link, (parent, similarity) in best.items()),
         key=lambda triple: triple[2],
-        reverse=True,
     )
-    return ranked[:k]
 
 
 def _reconstruct(

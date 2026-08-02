@@ -57,6 +57,10 @@ class _FakeEmbedder:
         self.calls.append(title)
         return np.array(self._vectors[title])
 
+    def embed_batch(self, titles: list[str]) -> list[np.ndarray]:
+        self.calls.extend(titles)
+        return [np.array(self._vectors[title]) for title in titles]
+
 
 class TestEmbeddingCache:
     def test_second_call_hits_memory_not_model(self, tmp_path):
@@ -98,6 +102,20 @@ class TestEmbeddingCache:
 
         assert cache.similarity("A", "B") == pytest.approx(1.0)
         assert sorted(embedder.calls) == ["A", "B"]
+
+    def test_similarity_many_dedupes_repeated_titles_before_batching(self, tmp_path):
+        """A page discovered via more than one frontier parent in the same tick
+        appears more than once in the `titles` list default.py passes in. Without
+        dedup, each never-before-seen repeat gets sent through the model again
+        (the expensive step) instead of being served from the batch that just
+        computed it."""
+        embedder = _FakeEmbedder({"Anchor": [1.0, 0.0], "Hub": [0.0, 1.0]})
+        cache = EmbeddingCache(embedder, data_dir=tmp_path)
+
+        scores = cache.similarity_many(["Hub", "Hub", "Hub"], anchor="Anchor")
+
+        assert embedder.calls.count("Hub") == 1
+        assert scores == {"Hub": pytest.approx(0.0)}
 
 
 @pytest.mark.slow

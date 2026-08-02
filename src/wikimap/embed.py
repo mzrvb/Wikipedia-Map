@@ -125,9 +125,14 @@ class EmbeddingCache:
         """
         anchor_vector = self.embed(anchor)
 
+        # Dedup first: a hub page linked from several of this tick's frontier
+        # parents shows up once per parent in `titles`. Without this, a title not
+        # yet in `_memory` gets added to `misses` once per occurrence, so
+        # `embed_batch` (the actual model forward pass) computes it more than
+        # once and each duplicate re-writes the same disk file.
         misses = []
         vectors: dict[str, np.ndarray] = {}
-        for title in titles:
+        for title in dict.fromkeys(titles):
             if title in self._memory:
                 vectors[title] = self._memory[title]
                 continue
