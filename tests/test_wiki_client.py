@@ -248,6 +248,62 @@ class TestSearchTitles:
         assert mock_get.call_count == 2
 
 
+def _parse_response(text: str):
+    """Fake requests.Response for an action=parse query."""
+    response = MagicMock()
+    response.json.return_value = {"parse": {"text": text}}
+    return response
+
+
+def _missing_title_response():
+    response = MagicMock()
+    response.json.return_value = {
+        "error": {"code": "missingtitle", "info": "The page you specified doesn't exist."}
+    }
+    return response
+
+
+class TestGetArticleHtml:
+    """The real, rendered article HTML behind Connect's human-play mode."""
+
+    def test_returns_the_rendered_html(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient()
+
+        with patch("wikimap.wiki.client.requests.get") as mock_get:
+            mock_get.return_value = _parse_response("<p>The <a href='/wiki/Cat'>cat</a>.</p>")
+            html = client.get_article_html("Cat")
+
+        assert html == "<p>The <a href='/wiki/Cat'>cat</a>.</p>"
+        _, kwargs = mock_get.call_args
+        assert kwargs["params"]["action"] == "parse"
+        assert kwargs["params"]["page"] == "Cat"
+        assert kwargs["headers"]["User-Agent"] == "test/0.0 (test@example.com)"
+
+    def test_returns_none_for_a_nonexistent_page_without_retrying(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient(retries=3, delay=0)
+
+        with patch("wikimap.wiki.client.requests.get") as mock_get:
+            mock_get.return_value = _missing_title_response()
+            html = client.get_article_html("Not A Real Page Xyz")
+
+        assert html is None
+        # missingtitle is a real answer, not a transient failure -- retrying
+        # would just ask Wikipedia the same true "it doesn't exist" three times.
+        assert mock_get.call_count == 1
+
+    def test_retries_then_gives_up(self, monkeypatch):
+        monkeypatch.setenv("USER_AGENT", "test/0.0 (test@example.com)")
+        client = WikiClient(retries=2, delay=0)
+
+        with patch("wikimap.wiki.client.requests.get") as mock_get:
+            mock_get.side_effect = RuntimeError("boom")
+            assert client.get_article_html("Anything") is None
+
+        assert mock_get.call_count == 2
+
+
 class TestLinkCache:
     def test_second_call_hits_memory_not_network(self, tmp_path):
         client = MagicMock()

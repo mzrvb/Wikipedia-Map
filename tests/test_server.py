@@ -162,13 +162,19 @@ def test_node_panel_is_not_inside_the_graph_container(client):
 
 class _FakeWikiClient:
     """Stand-in for WikiClient: get_summary looks up a canned title -> dict table;
-    search_titles looks up a canned query -> title-list table. Both endpoints that
-    use this fixture (/api/page, /api/suggest) share the one WikiClient singleton
-    in real code, so one fake covers both here too."""
+    search_titles looks up a canned query -> title-list table. Every endpoint that
+    uses this fixture (/api/page, /api/suggest, /api/article) shares the one
+    WikiClient singleton in real code, so one fake covers all three here too."""
 
-    def __init__(self, summaries: dict[str, dict], suggestions: dict[str, list[str]] | None = None):
+    def __init__(
+        self,
+        summaries: dict[str, dict],
+        suggestions: dict[str, list[str]] | None = None,
+        articles: dict[str, str] | None = None,
+    ):
         self._summaries = summaries
         self._suggestions = suggestions or {}
+        self._articles = articles or {}
 
     def get_summary(self, title: str) -> dict | None:
         return self._summaries.get(title)
@@ -176,13 +182,34 @@ class _FakeWikiClient:
     def search_titles(self, query: str) -> list[str]:
         return self._suggestions.get(query, [])
 
+    def get_article_html(self, title: str) -> str | None:
+        return self._articles.get(title)
+
+
+class _StubLinkCache:
+    """Minimal LinkCache stand-in for /api/article: get_links looks up a canned
+    title -> ns0-links table. A plain class, not a fake with backlinks/caching
+    behavior, since /api/article only ever calls get_links."""
+
+    def __init__(self, links: dict[str, list[str]]):
+        self._links = links
+
+    def get_links(self, title: str) -> list[str]:
+        return self._links.get(title, [])
+
+
+def _stub_link_cache(links: dict[str, list[str]]) -> _StubLinkCache:
+    return _StubLinkCache(links)
+
 
 @pytest.fixture
 def fake_wiki_client(monkeypatch):
     def _install(
-        summaries: dict[str, dict], suggestions: dict[str, list[str]] | None = None
+        summaries: dict[str, dict],
+        suggestions: dict[str, list[str]] | None = None,
+        articles: dict[str, str] | None = None,
     ) -> _FakeWikiClient:
-        client = _FakeWikiClient(summaries, suggestions)
+        client = _FakeWikiClient(summaries, suggestions, articles)
         monkeypatch.setattr(app_module, "_wiki_client", lambda: client)
         return client
 
@@ -222,6 +249,51 @@ class TestPageDetailEndpoint:
     @pytest.mark.parametrize("params", [{}, {"title": ""}, {"title": "x" * 201}])
     def test_rejects_bad_title(self, client, params):
         assert client.get("/api/page", params=params).status_code == 422
+
+
+class TestArticleEndpoint:
+    """/api/article: real rendered HTML with links marked real/inert, behind
+    Connect's human-play mode."""
+
+    def test_returns_title_and_annotated_html(self, client, fake_wiki_client, monkeypatch):
+        fake_wiki_client(
+            {}, articles={"Cat": '<p>The <a href="/wiki/Felidae">family</a> lives on.</p>'}
+        )
+        link_cache = _stub_link_cache({"Cat": ["Felidae"]})
+        monkeypatch.setattr(app_module, "_caches", lambda: (link_cache, None))
+
+        response = client.get("/api/article", params={"title": "Cat"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["title"] == "Cat"
+        assert 'class="wm-link" data-title="Felidae"' in body["html"]
+
+    def test_a_link_link_cache_does_not_know_about_is_disabled(
+        self, client, fake_wiki_client, monkeypatch
+    ):
+        fake_wiki_client(
+            {}, articles={"Cat": '<a href="/wiki/Category:Cats">Cats</a>'}
+        )
+        link_cache = _stub_link_cache({"Cat": []})  # get_links already drops ns != 0
+        monkeypatch.setattr(app_module, "_caches", lambda: (link_cache, None))
+
+        response = client.get("/api/article", params={"title": "Cat"})
+
+        assert 'class="wm-disabled"' in response.json()["html"]
+
+    def test_404s_for_a_title_with_no_article(self, client, fake_wiki_client, monkeypatch):
+        fake_wiki_client({}, articles={})
+        monkeypatch.setattr(app_module, "_caches", lambda: (_stub_link_cache({}), None))
+
+        response = client.get("/api/article", params={"title": "Not A Real Page Xyz"})
+
+        assert response.status_code == 404
+        assert "message" in response.json()
+
+    @pytest.mark.parametrize("params", [{}, {"title": ""}, {"title": "x" * 201}])
+    def test_rejects_bad_title(self, client, params):
+        assert client.get("/api/article", params=params).status_code == 422
 
 
 class TestSuggestEndpoint:

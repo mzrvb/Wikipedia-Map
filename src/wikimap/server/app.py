@@ -36,6 +36,7 @@ from wikimap import config
 from wikimap.algorithms.base import ConnectAlgorithm
 from wikimap.algorithms.connect import ALGORITHMS, DEFAULT_ALGORITHM
 from wikimap.config import RunParams
+from wikimap.wiki.article import annotate_links
 
 if TYPE_CHECKING:
     # Type-only, same reasoning as algorithms/base.py: _wiki_client() imports
@@ -222,6 +223,28 @@ def page_detail(title: str = Query(min_length=1, max_length=200)) -> dict:
             content={"message": f"No Wikipedia summary found for {title!r}"},
         )
     return {"title": title, "summary": result["summary"], "url": result["url"]}
+
+
+@app.get("/api/article")
+def article(title: str = Query(min_length=1, max_length=200)) -> dict:
+    """One page's real, rendered Wikipedia HTML, with every link marked real
+    (clickable) or inert — the data behind Connect's human-play mode.
+
+    "Real" means "in `LinkCache.get_links(title)`," the exact ns0-filtered list
+    the algorithm itself trusts, not anything inferred from this HTML — see
+    `wiki/article.py`. Fetched on demand per page a human navigates to, same
+    request shape as `/api/page`, not streamed: one page is one lookup, not a
+    multi-tick search.
+    """
+    html = _wiki_client().get_article_html(title)
+    if html is None:
+        return JSONResponse(
+            status_code=404,
+            content={"message": f"No Wikipedia article found for {title!r}"},
+        )
+    link_cache, _ = _caches()
+    real_links = set(link_cache.get_links(title))
+    return {"title": title, "html": annotate_links(html, real_links)}
 
 
 @app.get("/api/suggest")

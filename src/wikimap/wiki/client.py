@@ -170,6 +170,65 @@ class WikiClient:
                 time.sleep(self._delay)
         return []
 
+    def get_article_html(self, title: str) -> str | None:
+        """Return `title`'s real, rendered Wikipedia HTML (as MediaWiki's own
+        parser produces it — the full article body, not a plaintext extract),
+        or None if the page doesn't exist or every retry failed.
+
+        Bypasses wikipedia-api for the same reason get_backlinks/search_titles do:
+        the library has no HTML-rendering support at all. `wikipediaapi`'s own
+        `ExtractFormat.HTML` looked like a fit but isn't — the `extracts` API prop
+        it wraps is built for plaintext-with-bold/italic summaries and strips
+        every `<a>` tag, which makes it useless for a feature whose entire point
+        is real, clickable links. `action=parse&prop=text` is MediaWiki's actual
+        page-rendering endpoint (what wikipedia.org itself is built from) and
+        keeps every internal link as a real `<a href="/wiki/...">`.
+
+        This is the one method in this class that hands back a page's own HTML
+        untouched — namespace filtering and link-safety happen downstream, in
+        `wiki/article.py`, against the SAME ns0 list `get_links` already trusts,
+        not by re-deriving it from this HTML.
+        """
+        params = {
+            "action": "parse",
+            "page": title,
+            "prop": "text",
+            "format": "json",
+            "formatversion": 2,
+        }
+
+        for attempt in range(1, self._retries + 1):
+            try:
+                response = requests.get(
+                    self._api_url,
+                    params=params,
+                    headers={"User-Agent": self._user_agent},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if "error" in payload:
+                    # missingtitle (page doesn't exist) is expected and not
+                    # worth a retry; any other error code retries like a
+                    # transient failure would, since we can't tell them apart
+                    # without parsing MediaWiki's error codes here too.
+                    if payload["error"].get("code") == "missingtitle":
+                        return None
+                    raise RuntimeError(payload["error"])
+                return payload["parse"]["text"]
+            except Exception:
+                logger.warning(
+                    "get_article_html(%r) attempt %d/%d failed",
+                    title,
+                    attempt,
+                    self._retries,
+                    exc_info=True,
+                )
+                if attempt == self._retries:
+                    return None
+                time.sleep(self._delay)
+        return None
+
     def get_backlinks(self, title: str, limit: int = BACKLINK_LIMIT) -> list[str]:
         """Return pages that link TO `title` (ns0 only), capped at `limit`.
 
