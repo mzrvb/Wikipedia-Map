@@ -202,6 +202,22 @@ def _stub_link_cache(links: dict[str, list[str]]) -> _StubLinkCache:
     return _StubLinkCache(links)
 
 
+class _StubEmbedCache:
+    """Minimal EmbeddingCache stand-in for /api/evaluate_run: same table-lookup
+    shape as test_default.py's/test_feedback.py's fakes."""
+
+    def __init__(self, scores: dict[str, float]):
+        self._scores = scores
+
+    def similarity(self, a: str, b: str) -> float:
+        if a == b:
+            return 1.0
+        return self._scores.get(a, 0.0)
+
+    def similarity_many(self, titles: list[str], anchor: str) -> dict[str, float]:
+        return {title: self.similarity(title, anchor) for title in titles}
+
+
 @pytest.fixture
 def fake_wiki_client(monkeypatch):
     def _install(
@@ -294,6 +310,62 @@ class TestArticleEndpoint:
     @pytest.mark.parametrize("params", [{}, {"title": ""}, {"title": "x" * 201}])
     def test_rejects_bad_title(self, client, params):
         assert client.get("/api/article", params=params).status_code == 422
+
+
+class TestEvaluateRunEndpoint:
+    """/api/evaluate_run: the human-play recap, one call per finished run."""
+
+    def test_grades_each_move_and_serializes_from_as_from(self, client, monkeypatch):
+        link_cache = _stub_link_cache({"Seed": ["Target", "Other"]})
+        embed_cache = _StubEmbedCache({"Seed": 0.1, "Target": 0.0, "Other": 0.9})
+        monkeypatch.setattr(app_module, "_caches", lambda: (link_cache, embed_cache))
+
+        response = client.post(
+            "/api/evaluate_run",
+            json={"target": "Target", "moves": [{"from": "Seed", "to": "Target"}]},
+        )
+
+        assert response.status_code == 200
+        evaluations = response.json()["evaluations"]
+        assert len(evaluations) == 1
+        assert evaluations[0]["from"] == "Seed"
+        assert evaluations[0]["to"] == "Target"
+        assert "from_" not in evaluations[0]
+        assert evaluations[0]["grade"] == "Brilliant"
+
+    def test_grades_multiple_moves_in_order(self, client, monkeypatch):
+        link_cache = _stub_link_cache({"A": ["B", "C"], "B": ["Target"]})
+        embed_cache = _StubEmbedCache({"A": 0.1, "B": 0.9, "C": 0.2, "Target": 0.0})
+        monkeypatch.setattr(app_module, "_caches", lambda: (link_cache, embed_cache))
+
+        response = client.post(
+            "/api/evaluate_run",
+            json={
+                "target": "Target",
+                "moves": [{"from": "A", "to": "B"}, {"from": "B", "to": "Target"}],
+            },
+        )
+
+        evaluations = response.json()["evaluations"]
+        assert [e["from"] for e in evaluations] == ["A", "B"]
+        assert evaluations[0]["grade"] == "Best"  # B was the top-ranked link from A
+        assert evaluations[1]["grade"] == "Brilliant"  # reached the target
+
+    def test_empty_move_list_is_a_valid_empty_recap(self, client, monkeypatch):
+        """Giving up on the seed page, having never moved, is a legitimate way
+        for a human run to end (see the human-play give-up design)."""
+        monkeypatch.setattr(
+            app_module, "_caches", lambda: (_stub_link_cache({}), _StubEmbedCache({}))
+        )
+
+        response = client.post("/api/evaluate_run", json={"target": "X", "moves": []})
+
+        assert response.status_code == 200
+        assert response.json() == {"evaluations": []}
+
+    def test_rejects_a_payload_missing_target(self, client):
+        response = client.post("/api/evaluate_run", json={"moves": []})
+        assert response.status_code == 422
 
 
 class TestSuggestEndpoint:

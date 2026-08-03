@@ -31,8 +31,9 @@ from typing import TYPE_CHECKING
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
-from wikimap import config
+from wikimap import config, feedback
 from wikimap.algorithms.base import ConnectAlgorithm
 from wikimap.algorithms.connect import ALGORITHMS, DEFAULT_ALGORITHM
 from wikimap.config import RunParams
@@ -258,6 +259,57 @@ def suggest(q: str = Query(min_length=1, max_length=200)) -> list[str]:
     it shares that endpoint's WikiClient singleton rather than building its own.
     """
     return _wiki_client().search_titles(q)
+
+
+class _MovePayload(BaseModel):
+    """One committed move in a human run. `from_`/alias="from" mirrors
+    MoveEvaluation's own from_/"from" split (see graph/contracts.py — `from` is a
+    Python keyword, so the wire format and the dataclass field can't share a
+    spelling)."""
+
+    from_: str = Field(alias="from", min_length=1, max_length=200)
+    to: str = Field(min_length=1, max_length=200)
+
+
+class _EvaluateRunRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=200)
+    moves: list[_MovePayload]
+
+
+def _serialize_evaluation(evaluation) -> dict:
+    """asdict() gives back {"from_": ..., ...} — the exact clash contracts.py's
+    docstring already names. Rewritten to {"from": ...} here, once, at the one
+    place a MoveEvaluation actually crosses the wire, rather than teaching the
+    frontend about a Python keyword collision it has no reason to know about.
+    """
+    payload = asdict(evaluation)
+    payload["from"] = payload.pop("from_")
+    return payload
+
+
+@app.post("/api/evaluate_run")
+def evaluate_run(payload: _EvaluateRunRequest) -> dict:
+    """Grade a finished human run, move by move, in one call.
+
+    One request per finished run (reached the target, or gave up), not one per
+    move: the human-play design is "no live grading, full recap only at the
+    end" (see CLAUDE.md), so the frontend never needs a mid-run answer, and
+    batching avoids N round trips for an N-move run. The move list itself is
+    tracked client-side as the player clicks through — the server stays
+    stateless per-request, same shape as every other endpoint here, rather than
+    growing a first notion of a "session."
+
+    feedback.py is the only grader (contract 3); this route's entire job is
+    handing it each move and shipping back what it says.
+    """
+    link_cache, embed_cache = _caches()
+    evaluations = [
+        feedback.evaluate_move(
+            move.from_, move.to, payload.target, link_cache, embed_cache
+        )
+        for move in payload.moves
+    ]
+    return {"evaluations": [_serialize_evaluation(e) for e in evaluations]}
 
 
 # Mounted LAST and at "/" so it acts as the fallback: the /api routes above are
