@@ -9,6 +9,482 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## 2026-08-02 — `feedback.py` implemented: rank-based move grading (contract 3) — docs backfilled
+
+Landed by a parallel backend session as commit `9eb769f` with no HISTORY/CLAUDE/README update in
+the same commit — recorded here after the fact so the doc trail doesn't have a silent gap where a
+real contract went from placeholder to implemented.
+
+`feedback.py` was a docstring-only placeholder until now; `evaluate_move()` is the first real
+implementation of contract 3 (`feedback.py` is the only grader). Grading is **rank-based, not an
+absolute cosine-similarity threshold**: a move is graded by where its destination ranks, by
+similarity to the target, among every real (ns0) link the page it was played from actually
+offered — not restricted to the algorithm's top-K, since a human player can click any link on the
+page, not just the ones an algorithm would have kept. This matters because the same raw cosine
+score means something different on different pages: 0.3 similarity can be the best (or only)
+option on a weak page and a lazy pick on a strong one, so an absolute threshold would grade the
+same number two different ways depending on context, which a rank comparison can't be fooled by.
+Reaching the target directly is graded `Brilliant` unconditionally, bypassing the rank comparison
+entirely — there's nothing to rank a "found it" move against.
+
+The five grade boundaries (`Best`/`Good`/`Inaccuracy`/`Mistake`/`Blunder`, split by percentile
+rank among a page's available links) are an explicit **placeholder**, flagged in the module
+docstring with the same status as `config.py`'s `MAX_DEPTH`: reasonable-looking guesses, not yet
+tuned against real human play. Do not adjust the percentile cutoffs without live playtesting data
+to justify a specific change — same rule this project already applies to `MAX_DEPTH`.
+
+This is backend-only groundwork for Connect's human-play mode, which does not exist yet — nothing
+in the server or frontend calls `evaluate_move()` today. `link_cache`/`embed_cache` are injected
+the same way every algorithm already receives them (Option A), so grading a move costs no new
+fetch when the page was just rendered for a player to click through. 6 new tests in
+`tests/test_feedback.py` (direct-hit Brilliant, top/bottom/middle rank, and that grading responds
+to a page's own link set rather than a fixed score cutoff); 109 fast tests green overall as of
+this backfill, `ruff check` clean.
+
+## 2026-08-02 — Twin-rail log overlap fixed, a found-banner added, and an autocomplete race fixed alongside it
+
+The twin-rail "Interchange" log rework (previous entry below) had never been checked in a real
+browser — every prior pass here verified with `node --check` and a curl 200 only. This pass
+installed Playwright + headless Chromium into a scratch venv (same approach as the Forces-slider
+measurement session) and actually drove the running dev server through a real `Cat -> Astronomy`
+Connect run, screenshotting `#log` and reading real `getBoundingClientRect()` numbers instead of
+guessing from the CSS. That surfaced a real bug the static checks couldn't have caught: on the
+origin/destination/exhausted rows, the dot's text ("st**a**rt: 'Cat'...") was rendering with its
+first few characters hidden UNDER the dot itself, and the bridge line cut across the middle of the
+wrapped text.
+
+**Root cause.** Those three row kinds are a two-row CSS Grid: a "dots" row (`.col.fwd`/`.col.bwd`)
+above a "caption" row (`.shared-label`, `grid-column: 1 / -1`). But `.col`'s only child content for
+these three kinds is an empty-string `.label` (the real text lives in `.shared-label` below, not in
+the column itself), and `.dot` is `position: absolute` — so neither contributes any intrinsic
+height to `.col`. With both grid items in row 1 reporting 0 height, that row's track collapsed to
+0px, and row 2 (`.shared-label`) started at the exact same y-coordinate as row 1. The dot's
+`top: 7px` (and the bridge's `top: 13px`), both offsets computed on the assumption of a real
+dots-row height, ended up landing 7-13px into what was visually the caption's own text instead.
+Round rows never showed this because their `.label` always holds real text ("round 1: 20 fwd"),
+which gives `.col` genuine height — the bug only affects rows with an empty per-column label and a
+separate full-width caption.
+
+**Fix**, confirmed via a second bounding-box read after the change (9px/6px clear gap between the
+dot and the caption's first line, vs. touching/overlapping before): `#log .row .col` gained
+`min-height: 28px` — enough to clear the tallest marker (destination's rotated diamond, whose
+rotated bounding box is ~19.8px, centered on the same `top: 7px` origin as the round dots) with a
+few px of margin either side. Round rows are unaffected: their real label text already exceeds
+28px of line height, so the min-height is a no-op there. Also gave `.shared-label` and `.meta`
+matching `padding-left: 22px` (previously 0) so their text starts flush under the round rows'
+labels above/below them instead of at the row's bare left edge — a secondary misalignment, not an
+overlap, caught in the same visual pass.
+
+**Found banner added**, the second half of what was asked for this pass ("make the UI more
+presentable once a connection is found"). A floating pill (`#found-banner` in `index.html`, a
+sibling of `#graph`/`#panel`/`#node-panel` — same nesting rule as those, for the same reason:
+vis-network's `Canvas._create()` wipes any child it's handed). Centered top (`left: 50%`,
+`transform: translateX(-50%)`), clear of `#node-panel` (left:12) and `#panel` (right:12) at the
+same `top: 12px`. Deliberately reuses `step.path`'s own terminal `Step.note` verbatim as its text
+(`showFoundBanner(step.note)` in `applyStep()`, right next to the existing `highlightPath(step.path)`
+call) rather than composing a second "reached X in N hops" phrasing — this is a display-only
+convenience, not a new source of truth, and a second hand-rolled phrasing could drift from what the
+log already says while this one structurally can't. Same amber (`#facc15`) as the log's destination
+diamonds and the graph's path highlight (`PATH_COLOR`), so all three reinforce one "this is the
+answer" signal instead of adding a fourth hue. Dismissible (`#found-banner-close`, same `.hint`-style
+button pattern as `#node-panel-close`); cleared automatically by `resetLog()` so a fresh run or
+replay never shows a stale banner from the previous one.
+
+**A real, unrelated bug found and fixed along the way**, because it was actively undermining the
+found-banner's presentability in the same screenshots: `setupAutocomplete()`'s suggestion dropdown
+(`app.js`, built 2026-07-30) could reopen itself AFTER the input blurred. The debounced
+`fetchSuggestions(query).then(...)` callback only guarded against a STALE query (`input.value.trim()
+!== query`) — it never checked whether the input was still focused. Sequence: type → debounce timer
+fires → fetch sent → user clicks Run before the response lands → `blur` fires `hide()` → the
+in-flight fetch resolves moments later, the query text is still unchanged (so the stale guard passes),
+and `renderSuggestions()` reopens the list regardless — a dropdown that outlives the run and sits on
+top of the graph and the new banner. This is a genuine race, not a headless-browser-only artifact:
+it reproduces any time a response arrives after the user has already moved on, which typing-then-
+clicking-Run does routinely. Fixed with a second guard, `if (document.activeElement !== input) return;`,
+alongside the existing stale-query check. Re-verified live: a full run + screenshot after the fix
+shows no leftover dropdown.
+
+All three fixes are frontend-only (`app.js`, `style.css`, `index.html`), no contract/server/Python
+change. Not yet re-run through the fast test suite (frontend-only, nothing there to break), but this
+pass — unlike every prior frontend-only pass this project — is the first one actually confirmed
+against a live, rendered page rather than static syntax checks alone.
+
+---
+
+## 2026-08-02 — Center force: full re-measurement pass, range widened again with actual margins
+
+The lock-to-default fix worked but was a stopgap, not a design — it removed the ability to
+tighten the layout at all. User asked for the range to be re-derived properly this time: measure
+the real scaling in Chromium, iterate several candidate configs, and pick min/max/default from
+that data instead of patching one variable per complaint cycle.
+
+**Method.** Swept `centralGravity` 0.30/0.35/0.40/0.45 against two graph instances (a fresh
+`Cat -> Astronomy` run and a second re-run of the same pair forced through a deeper `max_depth`
+ceiling via the disabled-but-JS-settable `#max_depth` input — confirmed structurally identical,
+81 nodes both times, since `default.py` stops at the real meeting point regardless of the
+ceiling, but a genuinely independent re-settle, not a cached repeat), 2 trials each, sampling
+`network.getPositions()` every 150ms. Also re-swept label visibility at `centralGravity`
+0.003-0.008 on both graphs to confirm the existing 0.005 floor still holds.
+
+**Result:** 0.30/0.35/0.40 settled to 0px/frame on every trial on both graphs; 0.45 flaked once
+(3-8px/frame non-decaying drift on 1 of 4 trials) — consistent with the earlier binary search
+placing the real instability boundary between 0.40 and 0.45. Chose `data-log-max=0.35`, not 0.40:
+0.40 tested clean here too, but it's the exact number that was already shipped when the user
+reported this still felt broken last round, so it gets no benefit of the doubt — 0.35 buys a full
+extra step of margin below the confirmed-flaky value. `data-log-min` stays `0.005`. Re-verified
+against the real file end to end: a 10-unit-step sweep from 0.005 to 0.35 produced a flat
+14.9-19.9% radius drop every single step (matching a `radius ~ centralGravity^-0.5` power-law fit
+computed from the original 11-point sweep at the old bounds) — no dead zones, no runaway zone.
+Default raw recalculated to keep resolving to the same semantic default, `centralGravity≈0.0099`.
+
+**A false alarm caught and corrected in the same pass, worth recording on its own:** a
+repeated-trial check at the new top edge flaked once in 4 tries at a 2.5-second settle window —
+which looked exactly like the earlier confirmed cg=0.5 instability. Before shipping 0.35 anyway,
+re-ran that exact flaky transition 6 times watching a full 12 seconds instead of 2.5: every trial
+decayed smoothly and completely to 0px/frame, some just taking ~3.5s instead of ~2.5s — an
+ordinary damped settle after a sudden parameter jump (a brief spike over 100px/frame, then a
+monotonic decay to exactly zero), not oscillation. That is categorically different from the
+confirmed real instability at `centralGravity≈0.5`, which stayed at 2.6-11.9px/frame with no
+decay trend even 9 seconds in (re-checked against that original data to make sure this wasn't the
+same failure mode wearing a different number). The lesson, for the next time a jitter probe reads
+"unsettled": that reading only means something if the observation window is long enough to rule
+out a slow-but-ordinary settle — 2-3 seconds was not, for this graph size; 12 seconds reliably is.
+Without that recheck, this pass would have shipped a fourth number chosen to dodge a bug that was
+never actually there, which is exactly the failure pattern the last three cycles fell into.
+
+## 2026-08-02 — Center force: slider's max hard-capped to the shipped default, ending the loop
+
+Fourth report the same day ("still broken... is there no way to cap the highest center force
+slider option to the default center force option?") after curve-shape, floor, and ceiling fixes
+all failed to satisfy the complaint. Rather than another measure-and-cap cycle, took the user's
+suggestion literally: `data-log-max` on `#d-centralGravity` is now `0.01` — the exact shipped
+default `centralGravity` value, not a number chosen to sit safely above it. Confirmed live against
+the real file: raw=100 resolves to exactly `0.01`, raw=0 to exactly `0.005` (unchanged floor from
+the earlier labels-vanish fix), raw=50 to the geometric midpoint `0.00707`. The slider can now only
+ever *loosen* the layout from the default; it is structurally impossible to drag it into the
+unstable zone found in the previous entry (`>=0.456`), because that zone is no longer part of the
+range at all — this isn't "verified safe," it's "not reachable," a stronger guarantee than
+anything the last three passes produced. If a use case ever needs MORE central pull than the
+default, that requires deliberately re-opening this range and re-doing the stability sweep from
+the previous entry — not guessing a bigger ceiling.
+
+## 2026-08-02 — Center force "insanely sensitive" — real cause was physics instability, not the slider curve
+
+Third report in one day about this same control ("center force slider is still insanely
+sensitive"), after the log-scale remap and the label-vanish fix above. Both of those fixes were
+real, but neither was the actual complaint — this time the culprit wasn't the slider's math at
+all, it was the physics simulation itself.
+
+**Method, to avoid a fourth failed cycle:** rather than re-measuring radius/percentage-per-step
+again (already proven clean twice), wrote a Playwright probe that samples `network.getPositions()`
+repeatedly (every 150ms, well after the initial settle window) and measures frame-to-frame node
+movement — i.e. "has the layout actually stopped moving," not "what does it look like once it
+stops." Also simulated a real mouse-down/move/up drag on the slider element itself, not just a
+scripted value change, to rule out a test-methodology gap.
+
+**The bug:** the forceAtlas2Based solver genuinely never converges once `centralGravity` gets
+close to the old ceiling of 0.5, given this graph's other physics defaults (`repel=70`, raised in
+an earlier pass the same day). Binary-searched live on the real 81-node `Cat -> Astronomy` graph:
+every value at or below `raw=97` (`centralGravity<=0.436`) reliably settled to 0px/frame movement
+across repeated trials; `raw=98-100` (`0.456-0.5`) was flaky-to-reliably unstable, and the old
+ceiling itself (`raw=100`, `centralGravity=0.5` exactly) showed 6-17px of persistent per-frame
+drift that had not decayed even after 6+ seconds of waiting — a genuine, non-decaying oscillation
+(a limit cycle), not a rendering artifact or a slow settle. Dragging anywhere near the top of the
+old range put the simulation into a state that visually never stops jittering — which is exactly
+what "insanely sensitive" describes, and no amount of re-shaping the raw-to-value curve could have
+fixed it, since the bug was in the physics, not the mapping.
+
+**Fix:** lowered `data-log-max` on `#d-centralGravity` from `0.5` to `0.4` (`index.html`) — chosen
+with margin below the live-confirmed stable boundary (`<=0.436`), re-verified by sweeping the
+entire new 0-100 raw range and re-testing the new top edge (`raw=100` -> `centralGravity=0.4`)
+three separate times, all settling to 0px/frame. `data-log-min` (0.005, from the previous fix)
+is untouched. Default raw value recalculated `15` -> `16` to keep resolving to the same semantic
+default, `centralGravity≈0.01` (now 0.0101, was 0.00998) — confirmed live against the actual
+file on page load, not just computed by hand.
+
+**Considered and explicitly NOT done:** raising the solver's `damping` option, or lowering the
+`repel` default back down, either of which might also suppress the oscillation. Both were left
+alone because a quick live test of a `damping` bump did not clearly help (if anything looked
+worse in one trial) and neither was swept properly — shipping an unverified physics tweak here
+would repeat exactly the mistake this whole entry is about. Capping the slider's reachable range
+below a directly-measured stable boundary is the only change in this pass with live evidence
+behind it.
+
+## 2026-08-02 — Center force's log-scale fix had a real regression: labels could vanish entirely
+
+User reported Center force was "still fucked" after the log-scale fix earlier today. First
+re-measurement pass (same Chromium/Playwright approach, scratch venv) came back clean —
+fine-grained single-unit sweeps, a 3-second hold-and-sample drift check, and a rapid full-range
+sweep all showed smooth, monotonic, non-oscillating behavior, no console errors. That result
+didn't match the report, which was the signal to look at something other than the numbers already
+being tracked (radius/scale/drift) — so screenshots across a slow settle at several raw slider
+values were taken and actually looked at, not just measured.
+
+**The bug:** at the loose end of the (new) Center-force range, auto-fit correctly zooms out to
+frame the now-larger graph — but zooming out crosses the independent "Text fade threshold"
+control's cutoff (default 0.4), and `applyLabelFade()` drops every label's font to 0. Confirmed
+by screenshot: `raw=0` and `raw=15` rendered two clean, well-organized node clusters with **zero
+text anywhere on screen** — not corrupted, not overlapping, just completely unlabeled. A
+graph with no labels is not able to do its one job (show *which* page is which), so however
+correct the underlying physics numbers were, this reads as completely broken to a user touching
+the slider.
+
+**Why this is a regression from *this same day's* earlier fix, not a pre-existing bug someone
+else's slider would have hit:** the failure mode already existed before the log-scale change —
+literal `centralGravity=0` always produced this same zoomed-out, label-free state. But the old
+*linear* 0-0.5 slider kept its shipped default at `0.01`, only 2% of the way across the range, so
+a user had to drag almost the entire way to the far edge to ever reach the broken zone, and the
+slider's coarse 0.005 step made landing exactly there unlikely by accident. Putting the same
+range on a log scale (to fix the unrelated "too sensitive" complaint) gave the loose end roughly
+a third of the slider's total length — turning a corner case nobody would practically hit into
+one a user exploring the control lands on almost immediately.
+
+**Fix:** raised `data-log-min` on `#d-centralGravity` from `0.002` to `0.005` (`index.html`) —
+chosen so the loosest possible setting keeps the reference 81-node `Cat -> Astronomy` graph's
+auto-fit scale at 0.445, just above the shipped 0.4 label-fade default, confirmed both by the
+`network.getScale()`/`labelsVisible` reading at every 10-unit step of a full re-sweep (all `true`,
+where the previous bounds went `false` below roughly raw=20) and by a screenshot at `raw=0`
+showing every label intact. Default position recalculated for the new bounds (`raw=15`, still
+resolving to `centralGravity≈0.01`, the original semantic default) and the sensitivity curve
+re-checked: still a consistent ~16-21% change per 10-unit step across the *entire* range, if
+anything smoother than the first cut. A user who wants a looser view than the new floor allows
+still has one lever for it — the separate Text-fade-threshold slider — it just no longer happens
+by accident from a control that has nothing to do with text.
+
+Root-cause note for next time this class of bug shows up: the earlier verification pass measured
+exactly the things it set out to fix (radius, percentage-per-step, drift) and every one of those
+came back correct — the regression was invisible to that instrumentation because it lived in an
+interaction with a *different* control (Text-fade-threshold) that nothing was watching. Screenshots
+caught it in about two minutes once actually taken; the numeric probes alone, run twice, did not.
+
+## 2026-08-02 — Run log reworked: single transit-map rail → twin-rail "Interchange" diagram
+
+The run log's 2026-07-31 styling (see that entry below) drew the run as ONE rail, stops
+appended top-to-bottom in arrival order — a metaphor explicitly requested that session as an
+aesthetic upgrade to the old scrolling move-history log, with real transit-system maps as the
+stated inspiration. Revisited today because the user, re-examining it, was no longer sure a
+single sequential line still represented what the log was showing: `default.py` (the only
+Connect algorithm, since 2026-07-31) is a BIDIRECTIONAL beam search — every round expands the
+forward frontier (from the seed) AND the backward frontier (from the target) simultaneously, in
+the exact same tick, never one side taking a turn. A single rail reads as one journey; the
+reality is two frontiers racing toward each other and meeting in the middle. (The same
+underlying mismatch was partially caught once before, in the *wording* only — the 2026-07-31
+pass renamed "ply" → "round" specifically because "ply" wrongly implied turn-taking, but never
+revisited the rail's single-line *shape* once that was fixed.)
+
+Four concrete directions were mocked up (ASCII previews) and put to the user directly rather
+than picked unilaterally:
+
+1. **Round Ledger** — smallest change: keep the single rail exactly as-is, just split the
+   existing conic-gradient blended dot into two small side-by-side blue/orange dots per row.
+2. **Twin Lines / Interchange** — two parallel rails, one per frontier, merging at an
+   interchange marker on the meeting round.
+3. **Closing Gap** — one rail, but forward stops grow down from the top while backward stops
+   grow up from the bottom, so the visible gap shrinks each round. Flagged as the fiddliest to
+   build (no natural way to keep both growing ends in view without knowing the final round
+   count in advance).
+4. **Radar/wavefront** — abandon the transit metaphor entirely for two expanding pulses meeting
+   mid-canvas. Flagged as the biggest rewrite.
+
+**Twin Lines / Interchange was chosen.** Implementation leaned on a fact confirmed during
+research, not assumed: `forward_survivors`/`backward_survivors` are always computed and
+emitted together in one `Step`, every round, by construction (both loops run inside the same
+`while` iteration in `default.py` — there is no way for one side to advance without the other
+advancing in that same tick). That guarantee is what makes "one row per round, two columns"
+free of any cross-list synchronization problem — the two columns are never out of step because
+the data never allows them to be.
+
+Design decisions worth recording:
+- **Row taxonomy**, all driven by the EXISTING `stepKind()` classifier (zero changes needed
+  there): `origin` and `round` are two-column rows with independent per-side markers;
+  `destination` (i.e. `step.path` is set — covers both a normal meeting and the `seed==target`
+  instant win) is a two-column row with a bold amber bridge connecting both dots; `exhausted`
+  is two-column with hollow red rings and **no bridge at all** — the deliberate absence of a
+  bridge is what reads as "these two never met," the same logic the old single-rail design used
+  for hollow rings meaning "nothing arrived here."
+- **Colors**: origin row's two dots keep each column's own forward/backward hue (blue
+  `#2563eb`/orange `#ea580c`, same hexes `sideColor()` already uses for "side" colour-by), just
+  larger — a column then reads as one consistent color top-to-bottom until it turns amber at
+  the finish. (An earlier draft of this design used green/pink for the origin dots, matching
+  `applyStep()`'s fixed seed/target ENDPOINT node colors on the graph canvas — a real existing
+  convention, but a different one: that convention exists so an endpoint reads as "a fixed point
+  of the search" regardless of coloring mode, which isn't the job the origin row's dots are
+  doing here. Kept it simple: one hue per column, no new palette entries.)
+- **Counting a round's fwd/bwd numbers from `step.nodes` by depth sign, not from the note
+  string.** `default.py`'s note already says `"round N: X fwd + Y bwd"`, but the new
+  `roundCounts()` counts `node.depth > 0`/`< 0` directly — the same reasoning `stepKind()`
+  already uses for checking `step.path` instead of regexing "reached" out of prose meant for
+  humans. Verified `step.nodes` for a round Step is exactly `forward_survivors ∪
+  backward_survivors`, so the two approaches produce identical numbers; the structured field
+  just can't silently drift from the note if the wording ever changes for cosmetic reasons.
+- **A small rail state machine** (`railStarted`/`railEnded` module-level flags in `app.js`) was
+  needed because CSS `:last-child` — which the old design leaned on entirely — can't be trusted
+  once a row legitimately arrives AFTER the terminal (destination/exhausted) row: the trailing
+  "done"/"stopped" status caption. Without it, that caption would grow a stray rail tail past
+  where the search actually ended.
+
+**What did NOT change**: `stepKind()`, `log()`'s signature and all six of its existing non-Step
+call sites (SSE `status`/`error`, `done`, `stop()`, `source.onerror`, replay's `"replay done"`),
+`highlightPath()` and all graph-canvas rendering, the `textContent`-only rule for every label,
+`index.html` (the log is still built entirely in JS — zero markup changes), and replay's
+architecture (it drives the recorded `Step[]` through the same `applyStep()` → `logStep()` path
+on a timer, so it inherited the new rendering with no replay-specific code at all).
+
+Frontend-only (`app.js`, `style.css`), no contract/server/Python change of any kind —
+`default.py`/`contracts.py` were read-only references. `node --check` passed; static files
+confirmed serving (200s) off the already-running dev server. **Not manually click-tested in a
+live browser this session** — no browser automation tool was available (this session runs
+without `claude-in-chrome`-equivalent tooling), so a real visual confirmation is still owed, the
+same caveat several earlier frontend-only passes have carried.
+
+---
+
+## 2026-08-02 — Center force made log-scale, auto-fit staleness fixed, Arrows toggle removed, endpoint sizing fixed
+
+Same live-measurement approach as the repel/springLength pass earlier today (Playwright +
+headless Chromium against the real running server, scratch venv, not the project's own), this
+time chasing four separate user reports in one session: "Center force still feels too sensitive,"
+"I think auto-fit is broken," "remove the Arrows toggle, it's not needed," and "I'm confused by
+the Size-by options."
+
+**1. Center force ("centralGravity") switched from a linear to a log-scale slider.**
+Swept the old linear 0-0.5 range on the 81-node `Cat -> Astronomy` graph and measured
+`network.getPositions()`'s spread at each step: maxRadius fell from 2253 (cg=0) to 718 (cg=0.01)
+— a 68% collapse inside the first 2% of the slider's travel — then only from 259 to 102 (60%)
+across the remaining 98% (cg=0.08 to 0.5). That's not "sensitive," that's a slider whose entire
+usable range lives in its first few pixels while the rest does almost nothing: the underlying
+physics response is exponential in centralGravity, and a linear control on top of an exponential
+response is guaranteed to feel broken at one end. Fixed generically rather than by name-checking
+"centralGravity": any range input marked `data-log` (plus `data-log-min`/`data-log-max`) now has
+its raw 0-100 position remapped through `logValue()`/`rawFromLog()` in `app.js` before use, kept
+symmetric with `readDisplay()` (raw -> semantic) and `loadDisplay()` (semantic, from
+localStorage -> raw, so the handle lands in the right place on reload) — an attribute-driven
+escape hatch, matching this panel's existing "add HTML, not JS" pattern for every other control,
+rather than a one-off special case. Re-swept afterward: the same 81-node graph now moves by a
+consistent ~17-24% per 10-point step across the *entire* slider, confirmed both numerically and
+in a screenshot. Bounds (0.002-0.5) preserve every value the old slider could reach; only the
+mapping changed.
+
+**2. Auto-fit view was genuinely stale, not just perceived that way.** `scheduleFit()` was only
+ever called from `applyStep()` and the live-run's `fitInterval` — both gated on an in-flight SSE
+connection. Confirmed live: dragging any Forces slider (or unchecking then re-checking "Auto-fit
+view" itself) *after* a run had finished changed the layout dramatically (measured
+`network.getPositions()` radius moving from 461 to 762) while `network.getScale()` never moved
+at all — the camera was frozen on whatever it last framed. Root cause: nothing outside a live run
+ever called `scheduleFit()` again. Fixed with `settleFit()`, a new function alongside
+`scheduleFit()` in `app.js`: it runs `scheduleFit()` on a 300ms interval and keeps doing so until
+1.5s pass with no further display change (each call restarts the countdown), because a single
+immediate fit would just frame the pre-settle positions and go stale again the moment forceAtlas2
+kept moving — the same "physics needs a beat" problem the live-run's `fitInterval` already solved
+for the SSE case, just needed once more for the post-run case. `applyDisplay()` now calls
+`settleFit()` at the end (guarded on `nodes.length`, and `scheduleFit()` itself still no-ops when
+the checkbox is off). Re-verified: the same slider-after-done test now shows `network.getScale()`
+moving 0.49 -> 0.30, and the checkbox-recheck test shows 0.48 -> 0.31 — both previously frozen.
+
+**3. "Arrows" toggle removed — arrows are always on now.** A direct, informed user call: the
+graph is inherently directed (Wikipedia links are one-way, per contract 2's `Edge` shape), so
+there was never a real reason to draw it undirected, and the checkbox was a control that did
+nothing anyone would actually want to use. Deleted the `#d-arrows` row from `index.html`; `app.js`
+now hardcodes `arrows: { to: { enabled: true, scaleFactor: 0.4 } }` in both the network
+constructor and `applyDisplay()`'s `setOptions()` call, rather than reading a `display.arrows`
+that no longer exists. Confirmed live: no `#d-arrows` element in the DOM, arrows still render, no
+console errors.
+
+**4. Size-by confusion had a real, fixable cause: endpoints scaled through the SAME curve as
+everyone else.** Investigating turned up two distinct problems, one fixed and one only
+documented:
+- **Fixed:** `sizeFor(node)` was being applied to the seed/target nodes too, multiplied by their
+  flat 1.6x endpoint bump. That's inconsistent with how *colour* already treats endpoints (`isSeed
+  ? "#4ade80" : isTarget ? "#f472b6" : nodeColor(...)` — always a fixed colour, never run through
+  the picked scheme) and it actively misleads: in "depth" mode the seed is always depth 0 so it
+  always renders biggest, but the target's depth is whatever hop count the search happened to
+  finish at — shrinking the target on a *harder* search, backwards from what "this is an endpoint"
+  should mean. In "similarity" mode both endpoints share one fixed seed<->target baseline score,
+  which is often low precisely when a search is the interesting kind, again shrinking the nodes
+  that should stand out. Fixed by giving `isSeed`/`isTarget` (and `n.endpoint` in the
+  `applyDisplay()` resize pass) a flat `1.6 * display.nodeSize` regardless of `sizeBy`, mirroring
+  colour's existing carve-out exactly. Verified live: Cat/Astronomy's `size` field now reads
+  identically (19.2) across `uniform`/`score`/`depth` modes, where before "depth" gave the seed
+  26.88 against the target's 22.27 for the exact same search.
+- **Documented, not changed:** `default.py` ranks forward-frontier candidates by similarity to
+  the TARGET but backward-frontier candidates by similarity to the SEED (confirmed reading
+  `default.py`'s ply loop — `forward_scores`/`backward_scores` are two separate
+  `similarity_many` calls against two different anchors), and both land in the same `Node.score`
+  field. That's an intentional, correct design (each side ranks toward its own actual goal,
+  matching decision C's "Connect ranks by similarity to the target" rule read per-direction) —
+  but it means "similarity" doesn't have one fixed meaning across the whole picture, which is a
+  legitimate source of confusion no UI relabeling fully removes. Added a `title` tooltip to both
+  the Size-by and Colour-by selects in `index.html` explaining the split and pointing at "side
+  (fwd/bwd)" as the mode that disambiguates it, rather than changing the scoring semantics itself.
+
+All four changes are frontend-only (`index.html`/`app.js`), no contract/server/`config.py` change.
+`node --check` passes; no Python touched, so the fast suite is unaffected. Screenshots and raw
+probe output live only in the job's scratch tmp dir, same as the earlier pass today — not
+committed, transcribed here.
+
+## 2026-08-02 — Forces sliders measured live: repel default raised, spring-length range capped
+
+User reported the Forces sliders (Display panel, browser-only per contract 1) "feel weird" when
+tweaked. No `claude-in-chrome` tooling was available this session either, so — rather than guess
+— installed Playwright + headless Chromium into a scratch venv (`$CLAUDE_JOB_DIR`, not the
+project's own `.venv`; this is a throwaway measurement tool, not a project dependency) and drove
+the actual running server: three real Connect runs at three graph sizes (42 nodes stopped after
+round 1, 81 nodes — the documented `Cat -> Astronomy` full run — and 26 nodes for `LaMelo Ball ->
+Spanish Revolution`), sweeping 7 repel/springLength combinations on each via the real slider
+elements (`el.value = x; dispatchEvent(new Event('input'))`, the same path a user's drag fires),
+reading `network.getPositions()` for spread/overlap and taking two position snapshots ~1s apart to
+measure residual drift (a non-zero px/sec reading after ~2.7s means the physics never damped out
+— it's still visibly moving, not settled).
+
+**Findings:**
+1. **Node-circle overlap was never the binding constraint** — `overlapFrac` was 0 at every
+   combination tested, including the tightest (repel=10, springLength=40). What actually breaks
+   at low settings is **label** crowding (unmeasured by circle-overlap, confirmed by eye in a
+   screenshot: dozens of text labels stacked into an unreadable blob even though the dots
+   themselves never touched).
+2. **springLength, not repel, is what destabilizes the layout.** Every combo with
+   springLength <= 110 settled to near-zero drift regardless of repel (tested up to 150). Every
+   combo with springLength >= 250 showed 20-35 px/sec of continuing drift on the 81-node graph
+   — i.e. still visibly rearranging itself long after it should have stopped — and a screenshot
+   at the extreme (repel=250, springLength=400) showed the two search hubs collapsed near the
+   center with most of the other ~78 nodes flung to a sparse, disorganized ring, instead of the
+   clean two-star radial pattern the default settings produce.
+3. **The same springLength is safe at one graph size and broken at another.** springLength=250
+   drifted only ~8 px/sec on the 42-node graph but ~30 px/sec on the 81-node graph from the same
+   search pair — more connected/repelling pairs compound the imbalance between the spring pulling
+   nodes to a long rest length and centralGravity (fixed at 0.01) pulling them back in. This is
+   the concrete version of "feels weird": a slider position that looked fine on a small run can
+   silently stop converging once the same search grows past ~80 nodes, which is an ordinary size
+   for this app (documented for `Cat -> Astronomy`), not an edge case.
+4. **Higher repel had no downside in any test.** repel=150 with the default springLength=110
+   visually looked as good as or better than the shipped default (45) — same stable two-star
+   layout, slightly better label spacing — at every graph size tried.
+
+**Changes (frontend-only, `index.html`, no contract/server change — display knobs stay
+browser-owned):** default repel raised 45 -> 70 (finding 4). springLength's slider max capped
+400 -> 180 (findings 2-3 — nothing above ~200 produced a settled layout once the graph reached
+a realistic size, so that region of the range was actively harmful, not just an untested extreme).
+centralGravity and springConstant were left untouched — neither was swept, so there's no
+measurement backing a change to either yet, only to the two knobs users actually reach for when
+a graph "feels wrong" (spacing and edge length).
+
+Screenshots and raw metrics live only in the job's scratch tmp dir (not committed — they're
+measurement artifacts, not project files); the numbers above are transcribed from that run.
+One measurement artifact worth flagging for anyone re-running this: the very first data point
+in the `LaMelo Ball -> Spanish Revolution` sweep read `n=2` — a race in the *probe script*
+(it matched a leftover `.entry.destination` element from the previous run's log before the new
+run's `logEl.replaceChildren()` had fired), not a real single-node graph. Discard a sweep's first
+row if it looks anomalously small; every later row in that run was consistent.
+
+**Not done, flagged for later:** auto-fit (`scheduleFit()`) only re-runs when a new `Step` arrives
+during a live run, never when a Forces slider is changed after a run has stopped. Confirmed live:
+dragging springLength to its old maximum on a stopped, already-fit graph visibly pushed part of
+the graph outside the frozen viewport with no way to re-fit except starting a new run or manually
+scroll-zooming. Capping springLength's range (above) makes this far less likely to bite, but
+doesn't fix the underlying gap — `applyDisplay()` could call `scheduleFit()` too. Left alone this
+pass since it's a separate, smaller bug from what was asked, not a blocker for the slider-range
+fix.
+
 ## 2026-08-02 — `default.py` perf review: three optimizations, no behavior change
 
 A user-requested review of the only remaining Connect algorithm, looking specifically for

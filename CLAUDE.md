@@ -9,6 +9,150 @@ Update it alongside this file — see [Working practice](#working-practice).
 
 ## STATUS
 
+**`feedback.py` implemented: rank-based move grading (contract 3) — docs backfilled (2026-08-02).**
+Landed by a parallel backend session (commit `9eb769f`) with no doc update in that commit —
+recorded here after the fact. `feedback.py` was a docstring-only placeholder until now;
+`evaluate_move()` grades a move by where its destination **ranks**, by similarity to the target,
+among every real (ns0) link the page it was played from actually offered — not an absolute cosine
+threshold, and not restricted to top-K (a human player can click any link on the page). Reaching
+the target directly is unconditionally `Brilliant`. The five grade-boundary percentiles are an
+explicit placeholder (same status as `config.MAX_DEPTH`) — do not retune without real playtesting
+data. Backend-only: nothing in the server or frontend calls this yet, since Connect's human-play
+mode doesn't exist. 6 new tests, 109 fast tests green overall, `ruff check` clean. Full reasoning
+in HISTORY.
+
+**Twin-rail log overlap fixed, found-banner added, autocomplete race fixed — done (2026-08-02).**
+First real browser check of the twin-rail log (previous entries relied on `node --check` + curl
+only): a scratch Playwright/Chromium venv driving the live dev server found the origin/destination/
+exhausted rows' dot and bridge rendering on top of the caption text, not above it. Root cause: those
+rows' `.col` elements have empty per-column labels (real text lives in a separate `.shared-label`
+row below) and an absolutely-positioned dot, so neither contributes intrinsic height — the "dots"
+grid row collapsed to 0px and coincided with the caption row. Fixed with `min-height: 28px` on
+`#log .row .col` (a no-op on round rows, whose real label text already exceeds it) plus matching
+`padding-left: 22px` on `.shared-label`/`.meta`. Also added `#found-banner` — a floating amber pill,
+sibling of `#graph`/`#panel`/`#node-panel`, showing the terminal Step's own `note` verbatim
+(no second hand-rolled phrasing to drift from the log) when `step.path` lands; dismissible, cleared
+by `resetLog()`. While screenshotting, found and fixed a genuine unrelated race in
+`setupAutocomplete()` (2026-07-30): a suggestion-fetch response landing after the input already
+blurred could reopen the dropdown over the graph/banner, since the stale-query guard never checked
+whether the input was still focused — fixed with an added `document.activeElement !== input` check.
+All three frontend-only, verified live against the running server (screenshots + bounding-box
+reads), not just statically. Full root-cause writeup in HISTORY.
+
+**Center force: full re-measurement pass, range widened again with real margins (2026-08-02).**
+The lock-to-default fix worked but only allowed loosening, never tightening — user asked for the
+range to be re-derived properly: measure real scaling in Chromium, iterate candidate configs,
+pick min/max/default from the data. Swept `centralGravity` 0.30/0.35/0.40/0.45 on two graph
+instances; 0.30-0.40 settled clean every trial, 0.45 flaked once — confirming the real instability
+boundary sits between 0.40 and 0.45. Shipped `data-log-max=0.35` (a full margin below the flaky
+value, not 0.40 itself, since 0.40 was already the number that failed to satisfy the user last
+round). Re-verified end to end against the real file: a flat ~15-20% radius drop per slider step
+across the whole range, zero dead zones. Default raw recalculated to the same semantic
+`centralGravity≈0.0099`. **Also caught and corrected its own false alarm in the same pass**: a
+top-edge trial flaked once at a 2.5s settle window, looking identical to real instability — a
+12-second re-check showed it was an ordinary damped settle (full decay to zero, just slower),
+categorically different from the confirmed real cg≈0.5 oscillation (which never decayed even at
+9 seconds). Full binary-search and false-alarm data in HISTORY.
+
+**Center force: slider max hard-capped to the shipped default — ends the loop (2026-08-02).**
+Fourth report the same day; the user asked directly for the slider's top end to just BE the
+default, so there's no ceiling number left to get wrong. `data-log-max` is now `0.01`, the exact
+default `centralGravity`, not a value chosen to sit safely above it — confirmed live (raw=100 →
+`0.01` exactly, raw=0 → `0.005`, unchanged floor). The slider can now only loosen the layout from
+default; the unstable zone found in the previous entry (`>=0.456`) is structurally unreachable,
+not just measured-safe. Full reasoning in HISTORY.
+
+**Center force "insanely sensitive" complaint — real cause was solver instability, not the
+curve (2026-08-02).** Third report about this same control the same day. Rather than re-running
+the same radius/percentage measurements (already clean twice), a Chromium probe sampled
+`network.getPositions()` repeatedly to check whether the layout was actually settling, not just
+what it looked like once it stopped. Found the forceAtlas2Based solver genuinely never converges
+once `centralGravity` nears the old ceiling of 0.5 — a live binary search on the 81-node
+`Cat -> Astronomy` graph found `<=0.436` always settles to 0px/frame movement, `0.456-0.5` is
+flaky-to-reliably unstable, and the old ceiling itself showed 6-17px of non-decaying per-frame
+drift even after 6+ seconds — a genuine physics limit-cycle, not a rendering issue, and not
+something any slider-curve remap could fix. Fixed by lowering `data-log-max` 0.5 → 0.4
+(`index.html`), re-verified stable across the whole new range and three repeated trials at the
+new top edge; default raw recalculated 15 → 16 to keep the same semantic default
+(`centralGravity≈0.01`). Raising solver `damping` or lowering `repel` back down were considered
+and deliberately not done — untested live, and shipping an unverified physics tweak here would
+repeat the exact mistake this entry documents. Full binary-search numbers in HISTORY.
+
+**Center force's log-scale fix corrected — labels-vanish regression fixed (2026-08-02).** User
+reported it was "still fucked" after the earlier fix; a first Chromium re-measurement (radius,
+drift, per-step %) came back clean, so screenshots were taken instead of just numbers, which
+found the actual bug: at the loose end of the new log-scale range, auto-fit zooms out far enough
+to cross the separate Text-fade-threshold cutoff, and every node label vanishes. The failure mode
+predates today (linear `centralGravity=0` always did this) but the old slider buried it 2% from
+one edge; the log-scale remap gave it roughly a third of the slider's length, easy to hit by
+accident. Fixed by raising `data-log-min` 0.002 → 0.005 (`index.html`) — chosen so the loosest
+setting still keeps the reference 81-node graph's auto-fit scale above the 0.4 label-fade default,
+confirmed by both instrumented reading and screenshot at every step of a full re-sweep. Default
+raw slider position recalculated to still resolve to the original `centralGravity≈0.01`. Full
+narrative, including why the first verification pass missed it, in HISTORY.
+
+**Run log reworked into a twin-rail "Interchange" diagram — done (2026-08-02).** The log's
+2026-07-31 single-rail transit-map styling read as one sequential journey, which stopped
+matching reality once questioned against `default.py`'s actual shape: it's a BIDIRECTIONAL
+beam search, expanding the forward frontier (seed) and backward frontier (target)
+simultaneously every round, in the same `Step`, never one side at a time. Four directions were
+mocked up (Round Ledger / Twin Lines / Closing Gap / Radar) and presented to the user, who
+picked **Twin Lines / Interchange**: two parallel rails side by side — a blue Line from the
+seed, an orange Line from the target (same hexes `sideColor()` already used) — one row per
+round, since the two sides are always exactly lockstep (`forward_survivors`/`backward_survivors`
+are always emitted together, every round, by construction — no cross-list sync needed). The two
+rails merge at an amber diamond "interchange" row when `step.path` is set (destination), or cap
+off with hollow rings and no bridge on exhaustion (the absent bridge is what reads as "never
+met"). `app.js` gained `roundCounts()` (counts a round's `step.nodes` by depth sign rather than
+regexing the note — same reasoning `stepKind()` already used for checking `step.path` over
+string-sniffing), `resetLog()`/`appendRow()`/`logStep()`, and a small `railStarted`/`railEnded`
+state machine (a trailing "done" status row legitimately arrives after the terminal row, so CSS
+`:last-child` alone can't know where a rail should stop). `log()`'s signature and all six
+non-Step call sites (SSE status/error/done, `stop()`, `source.onerror`, replay's completion
+message) are unchanged; replay needs no separate handling since it drives the same `applyStep()`
+→ `logStep()` path on a timer. `index.html` untouched — the log is still built entirely in JS.
+Frontend-only, no contract/server change; `node --check` clean. **Not yet manually verified in a
+browser this session** (no browser automation tool available) — static files confirmed serving
+correctly (200s) off the already-running dev server, but a real click-through is still owed,
+same caveat as several earlier frontend passes.
+
+**Center force log-scale, auto-fit staleness fixed, Arrows toggle removed, endpoint sizing fixed
+— done (2026-08-02).** Four fixes in one Chromium-driven pass, continuing the same session's
+Forces-slider measurement work below. (1) Center force ("centralGravity") was linear over an
+exponential physics response — measured 68% of the layout's total range-of-motion compressed into
+the slider's first 2% of travel. Now a generic `data-log`/`-min`/`-max` attribute (any range input
+can opt in, not just this one) remaps the raw 0-100 slider through `logValue()`/`rawFromLog()` in
+`app.js`; re-measured afterward at a consistent ~17-24% change per step across the whole range.
+(2) Auto-fit view genuinely was stale, confirmed live: `scheduleFit()` was only ever called during
+an in-flight SSE run, so a Forces slider changed after a run finished (or re-checking the Auto-fit
+checkbox itself) moved the layout with nothing left to refit the camera —
+`network.getScale()` provably never moved. Fixed with `settleFit()`, a short-lived re-fit interval
+(300ms, extends itself for 1.5s of quiet) that `applyDisplay()` now triggers on every display
+change. (3) "Arrows" toggle removed — links are inherently directional, so it was a control for
+turning off something always needed; arrows are now hardcoded on in both the network constructor
+and `applyDisplay()`. (4) Size-by confusion traced to endpoints (seed/target) being run through
+the same score/depth scaling curve as every other node, which could shrink them (backwards from
+"this is an endpoint") depending on how hard the search was — fixed by giving endpoints the same
+kind of fixed-regardless-of-mode treatment colour already gets. A second, real but NOT code-fixed
+cause — `Node.score` means similarity-to-target on the forward frontier and similarity-to-seed on
+the backward one — got a `title` tooltip instead, since it's intentional per-side ranking, not a
+bug. All four frontend-only, no contract/server change. Full methodology and numbers in HISTORY.
+
+**Forces sliders measured live and re-tuned — done (2026-08-02).** User reported the Display
+panel's Forces sliders "feel weird" when tweaked; no live-browser tooling was available this
+session, so installed Playwright + headless Chromium into a scratch venv (not the project's own)
+and drove the actual running server through real Connect runs at three graph sizes, sweeping
+repel/springLength combinations and reading `network.getPositions()` for spread/overlap/drift.
+Findings: node-circle overlap was never the problem (0 at every setting tested — low settings
+instead crowd *labels* into an unreadable blob); **springLength above ~200 stops the layout from
+settling** once a graph reaches a realistic size (~80 nodes) — confirmed both by a persistent
+20-35px/sec drift reading and a screenshot of the layout visibly flying apart instead of
+organizing; repel had no observed downside even at 150 (better label spacing, same stability).
+`index.html` changed: repel default 45 → 70, springLength slider max capped 400 → 180.
+`centralGravity`/`springConstant` untouched (not swept, no measurement to justify changing them).
+Frontend-only, no contract/server change. Full methodology, numbers, and a flagged secondary bug
+(auto-fit doesn't re-run on a post-run slider change) in HISTORY.
+
 **`default.py` perf review — done (2026-08-02).** Three optimizations, no behavior change:
 `EmbeddingCache.similarity_many` no longer double-embeds a title that appears more than once in
 one batch (a hub page linked from several frontier parents in the same tick), `default.py`'s

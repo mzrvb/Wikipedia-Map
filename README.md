@@ -23,10 +23,19 @@ everything else. A Connect/Explore toggle sits in the header — Explore is disa
 mode is actually built. Click any node (mid-run or after) to open a panel with its real
 Wikipedia summary and a link to the article. The from/to fields autocomplete against real
 Wikipedia titles as you type, and autocorrect to the closest real title on Enter/Run even if
-you never clicked a suggestion. The run log renders as a transit-map line — each tick is a
-"stop," styled by kind (start, an ordinary round, the destination, no route found) — showing
-per-step and total-run timing (`[+123ms · 4.56s total]`) as a caption under each stop, measured
-in the browser. Light theme. 76 fast tests green, `ruff check` clean.
+you never clicked a suggestion. The run log renders as a twin-rail "Interchange" diagram — a
+blue rail from the seed and an orange rail from the target, one row per round, since
+`default.py`'s two frontiers always advance in lockstep — merging at an amber diamond when a
+route is found, or capping off with hollow rings on exhaustion. A floating banner surfaces the
+winning route's own note when one is found. Both rails show per-step and total-run timing
+(`[+123ms · 4.56s total]`) under each stop, measured in the browser. Light theme. 109 fast tests
+green, `ruff check` clean.
+
+**Contract 3 (`feedback.py`) is now implemented**, backend-only: `evaluate_move()` grades a move
+by where it ranks, by similarity to the target, among every real link the page it was played
+from actually offered — not an absolute score, since the same cosine value is a great pick on a
+weak page and a blunder on a strong one. Nothing calls it yet; it's groundwork for Connect's
+human-play mode, which doesn't exist in the UI. See `HISTORY.md`.
 
 **2026-07-31: `greedy`/`astar` stripped, `default.py` is now the ONLY Connect algorithm.** A
 direct, informed user call — repeated live testing showed the same result on hard cross-domain
@@ -66,8 +75,9 @@ cost two ways: frontier fetches within a ply run concurrently (a thread pool, no
 requests), and a ply's cache-miss titles are embedded in one batched `model.encode(list)` call
 instead of one call per title. Neither changes search behavior — same ranking, same output.
 
-Everything under `src/wikimap/` beyond `wiki/`, `embed.py`, `graph/`, and `algorithms/` is still
-a placeholder — a module docstring stating that file's responsibility, no implementation.
+`algorithms/explore/` (`bfs.py`, `beam.py`) is still a placeholder — a module docstring stating
+its responsibility, no implementation. Everything else under `src/wikimap/` (`wiki/`, `embed.py`,
+`graph/`, `algorithms/connect/`, `server/`, `feedback.py`) is implemented.
 
 Two deviations from the brief's ordering, both deliberate:
 

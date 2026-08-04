@@ -321,14 +321,69 @@ main {
 }
 #node-panel-link:hover { text-decoration: underline; }
 
-/* --- run log: a transit-map "line" -----------------------------------------
-   Each entry is a STOP on a rail running top-to-bottom, not a plain scrolling
-   line — the dot's shape/colour says what KIND of stop it is (origin, an
-   ordinary round, the destination, a service interruption), and the connecting
-   segment drawn between consecutive stops (.entry::after) is what makes the
-   whole thing read as one continuous line instead of a list. Entries are
-   APPENDED in run order (see app.js's log()) specifically so this reads
-   top-to-bottom like a route map, unlike the old newest-on-top log. */
+/* --- found banner: same amber as the log's destination row / graph's winning-
+   path highlight (PATH_COLOR in app.js), so the three reinforce one signal
+   instead of introducing a fourth "success" colour. Centered top, clear of
+   #panel (right:12) and #node-panel (left:12) at the same top:12 offset. */
+#found-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(70%, 480px);
+  background: rgba(250, 204, 21, 0.15);
+  border: 1px solid #facc15;
+  border-radius: 999px;
+  padding: 8px 12px 8px 16px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  font-size: 13px;
+  animation: found-banner-in 0.25s ease-out;
+}
+#found-banner.hidden { display: none; }
+#found-banner-label { word-break: break-word; }
+.found-banner-icon {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  transform: rotate(45deg);
+  background: #facc15;
+  box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.25);
+}
+#found-banner-close {
+  flex: none;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+#found-banner-close:hover { color: var(--text); }
+
+@keyframes found-banner-in {
+  from { opacity: 0; transform: translate(-50%, -6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* --- run log: twin-rail "Interchange" diagram ------------------------------
+   default.py is a BIDIRECTIONAL beam search: every round expands the forward
+   frontier (from the seed) AND the backward frontier (from the target) in the
+   same tick, together, always the same length on both sides (see its module
+   docstring) — never one side taking a turn. A single rail read as one linear
+   journey, which misrepresented that; two rails read as two lines racing
+   toward each other, merging at an interchange when they meet.
+
+   --dot-x / --col-gap pin every dot/rail — dual-column row or full-width
+   status row alike — to the same two x-coordinates, so nothing needs
+   per-row measurement: a CSS Grid `1fr 1fr` track split with `column-gap`
+   always resolves both column edges to the same place, and every selector
+   below places its markers using only these two constants. */
 #log {
   width: 340px;
   border-left: 1px solid var(--line);
@@ -337,29 +392,59 @@ main {
   background: var(--panel);
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   font-size: 12px;
+  --dot-x: 6px;
+  --col-gap: 12px;
 }
 
-#log .entry {
-  position: relative;
-  padding: 7px 0 7px 22px;
+/* Sticky column header, built by resetLog() at the start of every run/replay —
+   names which line is which, the way a transit map labels its lines. */
+#log-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: var(--col-gap);
+  padding: 4px 0 8px;
+  margin-bottom: 4px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+#log-header .fwd { color: #2563eb; }
+#log-header .bwd { color: #ea580c; }
+#log-header strong {
+  display: block;
+  color: var(--text);
+  text-transform: none;
+  font-size: 11px;
+  margin-top: 2px;
   word-break: break-word;
 }
 
-/* The rail segment BELOW this stop, connecting it to the next. Omitted on
-   :last-child since there's nothing after it yet — the instant a new entry
-   lands, the entry that WAS last stops matching :last-child and grows its
-   own connector automatically, with no JS bookkeeping required. */
-#log .entry:not(:last-child)::after {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 22px;
-  bottom: -7px;
-  width: 2px;
-  background: var(--line);
+/* --- two-column rows: origin / round / destination / exhausted ------------- */
+#log .row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: var(--col-gap);
+  padding: 7px 0;
 }
 
-#log .dot {
+/* min-height matters: origin/destination/exhausted give their .col an empty
+   label ("" — the real text lives in .shared-label below), and the dot is
+   position:absolute so it contributes no intrinsic height either. Without a
+   floor here that row-track collapses to 0 and the dot/bridge render on top
+   of .shared-label's text instead of above it. 28px clears the tallest
+   marker (destination's rotated diamond, ~20px, centered at top:7px) with
+   room either side; round rows (real label text) already exceed it, so this
+   is a no-op there. */
+#log .row .col { position: relative; padding-left: 22px; min-height: 28px; word-break: break-word; }
+#log .row .col .label { display: block; }
+#log .row .col .dot {
   position: absolute;
   left: 0;
   top: 8px;
@@ -370,43 +455,116 @@ main {
   box-sizing: border-box;
 }
 
-/* Origin/destination read as the "big station" ends of the line, the way a
-   subway map draws its termini larger than the stops in between. */
-#log .entry.origin .dot { left: -1px; top: 7px; width: 14px; height: 14px; background: #4ade80; }
-#log .entry.destination .dot {
-  left: -2px;
-  top: 6px;
-  width: 16px;
-  height: 16px;
-  /* Same amber as the winning route's highlight on the graph (PATH_COLOR in
-     app.js) — the log's destination marker and the graph's path line are
-     deliberately the same colour, so a viewer's eye connects the two. */
+/* The bridge spans from the fwd column's dot to the bwd column's dot — drawn
+   only where the two sides are meaningfully connected (origin, destination).
+   A round has none: the two frontiers are independent that tick. Exhausted
+   has none either — the point of that row is that they never connected. */
+#log .row .bridge {
+  position: absolute;
+  top: 13px;
+  height: 2px;
+  left: var(--dot-x);
+  width: calc(50% + var(--col-gap) / 2);
+  background: var(--line);
+}
+
+/* padding-left matches .col's, so wrapped text lines up under the round rows'
+   labels above/below it instead of starting flush at the row's left edge. */
+#log .row .shared-label { grid-column: 1 / -1; padding-left: 22px; margin-top: 2px; word-break: break-word; }
+#log .row .meta { grid-column: 1 / -1; padding-left: 22px; display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+
+/* origin: both lines' starting point. Each column keeps its OWN line's hue
+   (just larger, like a subway map's terminus) instead of a one-off colour —
+   a column then reads as one consistent hue top-to-bottom until it turns
+   amber at the finish. */
+#log .row.origin .col.fwd .dot { left: -1px; top: 7px; width: 14px; height: 14px; background: #2563eb; }
+#log .row.origin .col.bwd .dot { left: -1px; top: 7px; width: 14px; height: 14px; background: #ea580c; }
+
+/* round: independent per side, no bridge (see .bridge comment above). Same
+   blue/orange as "side" colour-by in app.js, so the log and the graph agree
+   on what forward/backward mean. */
+#log .row.round .col.fwd .dot { background: #2563eb; }
+#log .row.round .col.bwd .dot { background: #ea580c; }
+
+/* destination (interchange): both frontiers met. Same amber as the winning
+   route's highlight on the graph (PATH_COLOR in app.js) — deliberately the
+   same colour so a viewer's eye connects the log's interchange marker to the
+   graph's path line. */
+#log .row.destination .col .dot {
+  left: -1px;
+  top: 7px;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  transform: rotate(45deg);
   background: #facc15;
   box-shadow: 0 0 0 3px rgba(250, 204, 21, 0.25);
 }
+#log .row.destination .bridge {
+  height: 6px;
+  top: 11px;
+  background: transparent;
+  border-top: 2px solid #facc15;
+  border-bottom: 2px solid #facc15;
+}
 
-/* A round advances BOTH search directions at once, together, in the same tick
-   (default.py's bidirectional design — no side goes first) — split the dot to
-   say so, rather than picking one colour and hiding the other half of the
-   story. Same blue/orange as "side" colour-by in app.js, so the log and the
-   graph agree on what forward/backward mean. */
-#log .entry.round .dot { background: conic-gradient(#2563eb 0deg 180deg, #ea580c 180deg 360deg); }
+/* exhausted: hollow rings, no bridge at all — the absence of a bridge is what
+   reads as "these two never met," the same way status/failure rows below use
+   a hollow ring for "nothing arrived here" rather than "the train stopped
+   here." */
+#log .row.exhausted .col .dot { background: transparent; border: 2px solid #f87171; }
 
-/* Hollow rings, not fills, for entries that aren't a real stop the search
-   made: generic status chatter and "no route found" both read as "nothing
-   arrived here" rather than "the train stopped here." */
-#log .entry.status .dot { background: transparent; border: 2px solid var(--muted); }
-#log .entry.exhausted .dot { background: transparent; border: 2px solid #f87171; }
-#log .entry.failure .dot { background: #f87171; }
+/* --- full-width rows: status / failure chatter (SSE status/error/done,
+   stop(), replay's completion message) — unchanged in meaning from the old
+   single-rail design, just reusing --dot-x so it still lines up under the
+   fwd rail. */
+#log .row.status, #log .row.failure { display: block; padding-left: 22px; }
+#log .row.status .dot, #log .row.failure .dot {
+  position: absolute;
+  left: var(--dot-x);
+  top: 8px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-sizing: border-box;
+}
+#log .row.status .dot { background: transparent; border: 2px solid var(--muted); }
+#log .row.failure .dot { background: #f87171; }
+#log .row.status .label { color: var(--muted); }
+#log .row.failure .label { color: #f87171; }
+#log .row.status .meta,
+#log .row.failure .meta { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
 
-#log .entry .label { display: block; }
-#log .entry.status .label { color: var(--muted); }
-#log .entry.failure .label { color: #f87171; }
+/* --- rail continuation: two independent pass-through connectors per row, one
+   under each column, so each line reads as continuous instead of a list of
+   disconnected dots. `rails` is a mid-run row (both lines still going);
+   `rails-cap` is the LAST row either line will ever draw a connector into —
+   the terminal row itself (destination/exhausted), so the connector stops
+   exactly there and doesn't dangle into a later status/timing caption that
+   arrives after the run already ended (see appendRow()'s state machine in
+   app.js — CSS :last-child alone can't know this, since a trailing "done"
+   row legitimately arrives AFTER the terminal one). */
+#log .row.rails::before, #log .row.rails::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--line);
+}
+#log .row.rails::before { left: var(--dot-x); }
+#log .row.rails::after { left: calc(50% + var(--col-gap) / 2 + var(--dot-x)); }
 
-/* The old per-step timing benchmark ("[+123ms · 4.56s total]") now sits below
-   its stop as a small caption instead of cluttering the label line — the same
-   role a distance/time marker plays along a real transit line. */
-#log .entry .meta { display: block; margin-top: 2px; color: var(--muted); font-size: 10px; }
+#log .row.rails-cap::before, #log .row.rails-cap::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: calc(100% - 14px);
+  width: 2px;
+  background: var(--line);
+}
+#log .row.rails-cap::before { left: var(--dot-x); }
+#log .row.rails-cap::after { left: calc(50% + var(--col-gap) / 2 + var(--dot-x)); }
 
 @media (max-width: 800px) {
   main { flex-direction: column; }

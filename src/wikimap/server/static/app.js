@@ -19,7 +19,9 @@ const network = new vis.Network(
   { nodes, edges },
   {
     nodes: { shape: "dot", size: 12, font: { color: "#1a1c22", size: 13 } },
-    edges: { color: { color: "#c7cbd6" }, arrows: { to: { scaleFactor: 0.4 } }, smooth: false },
+    // Links are one-way (Wikipedia's real hyperlink direction), so arrows are never
+    // optional -- always on, no display toggle for it.
+    edges: { color: { color: "#c7cbd6" }, arrows: { to: { enabled: true, scaleFactor: 0.4 } }, smooth: false },
     physics: {
       // Force-directed layout: the browser decides positions. The server never
       // sends coordinates — networkx stores structure only (see LEARN.md).
@@ -45,13 +47,18 @@ function bind(id, event, handler) {
   return el;
 }
 
-// --- log: rendered as a transit-map "line" (see style.css) -----------------
+// --- log: rendered as a twin-rail "Interchange" diagram (see style.css) ----
+// default.py is bidirectional — every round expands the forward frontier
+// (from the seed) AND the backward frontier (from the target) in the same
+// tick, always together, never one side taking a turn (see its module
+// docstring). Two parallel rails, one per frontier, read as two lines racing
+// toward each other instead of the old single rail's "one journey" framing.
 const logEl = document.getElementById("log");
 
-// One CSS class per stop kind (style.css draws the dot/rail for each). `step.path`
-// (contracts.py) is checked directly rather than sniffing the note's text for
-// "reached" — it's the one case with real structured data to key off instead of
-// parsing a string meant for humans.
+// One CSS class per row kind (style.css draws the dots/rails/bridge for
+// each). `step.path` (contracts.py) is checked directly rather than sniffing
+// the note's text for "reached" — it's the one case with real structured
+// data to key off instead of parsing a string meant for humans.
 function stepKind(step) {
   if (step.path) return "destination";
   if (step.note.startsWith("start:")) return "origin";
@@ -60,12 +67,160 @@ function stepKind(step) {
   return undefined;
 }
 
+// Counts a round Step's nodes by depth SIGN (contracts.py: positive = forward,
+// negative = backward) rather than regexing default.py's note string — the
+// note is prose for humans, `node.depth` is the actual structured contract
+// field, and `step.nodes` for a round Step is exactly `forward_survivors ∪
+// backward_survivors` so this reproduces the note's numbers exactly.
+function roundCounts(step) {
+  let fwd = 0, bwd = 0;
+  for (const node of step.nodes || []) {
+    if (node.depth > 0) fwd++;
+    else if (node.depth < 0) bwd++;
+  }
+  return { fwd, bwd };
+}
+
+// Rail state, reset per run/replay by resetLog(). `railStarted` flips true on
+// the origin row; `railEnded` flips true on the terminal row (destination or
+// exhausted). appendRow() uses both to decide whether a row still needs a
+// through-rail (mid-run), caps the rail (this is the last row either line
+// draws into), or draws no rail at all — needed because a trailing "done"/
+// "stopped" status row legitimately arrives AFTER the terminal row, so CSS
+// :last-child alone can't be trusted to know where a rail should stop.
+let railStarted = false;
+let railEnded = false;
+let roundNumber = 0;
+
+// Floating success banner (see index.html) — shown once step.path lands,
+// reusing that Step's own note text so it can't drift out of sync with what
+// the log's destination row says (see the HTML comment above the markup).
+const foundBanner = document.getElementById("found-banner");
+const foundBannerLabel = document.getElementById("found-banner-label");
+
+function showFoundBanner(message) {
+  foundBannerLabel.textContent = message;
+  foundBanner.classList.remove("hidden");
+}
+
+function hideFoundBanner() {
+  foundBanner.classList.add("hidden");
+}
+
+bind("found-banner-close", "click", hideFoundBanner);
+
+// Clears the log and rebuilds its sticky seed/target header — replaces the
+// old bare `logEl.replaceChildren()` at both the fresh-run and replay call
+// sites, so the header and the rail-state counters always reset together.
+function resetLog(seed, target) {
+  logEl.replaceChildren();
+  hideFoundBanner();
+  railStarted = false;
+  railEnded = false;
+  roundNumber = 0;
+
+  const header = document.createElement("div");
+  header.id = "log-header";
+  for (const [cls, title] of [["fwd", seed], ["bwd", target]]) {
+    const col = document.createElement("div");
+    col.className = cls;
+    col.textContent = cls === "fwd" ? "seed" : "target";
+    const strong = document.createElement("strong");
+    strong.textContent = title;
+    col.append(strong);
+    header.append(col);
+  }
+  logEl.append(header);
+}
+
+// The single place a row lands in the log: appends it, auto-scrolls, and
+// stamps the rail-continuation class the row needs (see the state-machine
+// comment above `railStarted`).
+function appendRow(rowEl, kind) {
+  if (kind === "origin") railStarted = true;
+  const isTerminal = kind === "destination" || kind === "exhausted";
+  const inTransit = railStarted && !railEnded;
+
+  if (isTerminal) {
+    if (inTransit) rowEl.classList.add("rails-cap");
+    railEnded = true;
+  } else if (inTransit) {
+    rowEl.classList.add("rails");
+  }
+
+  // Appended, not prepended: a transit line reads top-to-bottom as a route,
+  // run start at the top. scrollTop tracks the newest stop into view as the
+  // line grows, the same way a live departure board follows a train instead
+  // of making you scroll to find it.
+  logEl.append(rowEl);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function makeCol(cls, message) {
+  const col = document.createElement("div");
+  col.className = "col " + cls;
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  const label = document.createElement("span");
+  label.className = "label";
+  // textContent, never innerHTML: page titles come from Wikipedia and land in
+  // this panel verbatim — see log()'s identical comment below.
+  label.textContent = message;
+  col.append(dot, label);
+  return col;
+}
+
+// Two-column rows: origin, round, destination, exhausted. `bridge` connects
+// the two dots for origin/destination (round/exhausted get none — see
+// style.css's ".bridge" comment for why each kind does or doesn't).
+function logStep(step, kind, meta) {
+  if (kind !== "origin" && kind !== "round" && kind !== "destination" && kind !== "exhausted") {
+    log(step.note, kind, meta);
+    return;
+  }
+
+  const row = document.createElement("div");
+  row.className = "row " + kind;
+
+  if (kind === "round") {
+    roundNumber++;
+    const { fwd, bwd } = roundCounts(step);
+    row.append(
+      makeCol("fwd", `round ${roundNumber}: ${fwd} fwd`),
+      makeCol("bwd", `round ${roundNumber}: ${bwd} bwd`)
+    );
+  } else {
+    // origin/destination/exhausted share one raw note across both columns —
+    // there's nothing per-side to say, only per-run.
+    row.append(makeCol("fwd", ""), makeCol("bwd", ""));
+    if (kind === "origin" || kind === "destination") {
+      const bridge = document.createElement("span");
+      bridge.className = "bridge";
+      row.append(bridge);
+    }
+    const shared = document.createElement("span");
+    shared.className = "shared-label";
+    shared.textContent = step.note;
+    row.append(shared);
+  }
+
+  if (meta) {
+    const metaEl = document.createElement("span");
+    metaEl.className = "meta";
+    metaEl.textContent = meta;
+    row.append(metaEl);
+  }
+
+  appendRow(row, kind);
+}
+
+// Full-width rows: status/failure chatter (SSE status/error/done, stop(),
+// replay's completion message) — every existing call site is unchanged.
 // `meta`, if given, renders as a small caption under the main label — the
-// per-step timing benchmark, kept visually separate from the note itself instead
-// of crammed into one line (see style.css's ".meta" comment).
+// per-step timing benchmark, kept visually separate from the note itself.
 function log(message, kind, meta) {
-  const line = document.createElement("div");
-  line.className = "entry" + (kind ? " " + kind : "");
+  const row = document.createElement("div");
+  row.className = "row" + (kind ? " " + kind : "");
 
   const dot = document.createElement("span");
   dot.className = "dot";
@@ -77,22 +232,16 @@ function log(message, kind, meta) {
   // can never become markup. (vis-network labels are drawn on canvas, so they're
   // safe by construction — this panel is the only place raw titles meet the DOM.)
   label.textContent = message;
-  line.append(dot, label);
+  row.append(dot, label);
 
   if (meta) {
     const metaEl = document.createElement("span");
     metaEl.className = "meta";
     metaEl.textContent = meta;
-    line.append(metaEl);
+    row.append(metaEl);
   }
 
-  // Appended, not prepended: a transit line reads top-to-bottom as a route, run
-  // start at the top — the old log read newest-on-top, which doesn't have a
-  // "direction of travel" for this metaphor to attach to. scrollTop tracks the
-  // newest stop into view as the line grows, the same way a live departure board
-  // follows a train instead of making you scroll to find it.
-  logEl.append(line);
-  logEl.scrollTop = logEl.scrollHeight;
+  appendRow(row, kind);
 }
 
 // --- timing ------------------------------------------------------------
@@ -122,6 +271,12 @@ function applyStep(step, seed, target, timing) {
   // later Step (linked from more than one page) must keep the tick it was actually
   // discovered in, not the tick of its most recent mention.
   tickCounter++;
+  // Built up per Step and written to the DataSets once at the end (not inside the
+  // loops) — nodes.update()/edges.add() both take an array, and one call with N
+  // items is one internal mutation/redraw instead of N. A live tick can carry up to
+  // ~40 nodes (top_k on both of default.py's frontiers), so this is the difference
+  // between 1 DataSet write per Step and 40.
+  const nodeUpdates = [];
   for (const node of step.nodes || []) {
     const isSeed = node.id === seed;
     const isTarget = node.id === target;
@@ -131,15 +286,24 @@ function applyStep(step, seed, target, timing) {
     // see it — the raw Step node object has no `tick` field of its own.
     const tick = existing ? existing.tick : tickCounter;
     if (!existing) maxTick = tickCounter;
-    const payload = {
+    nodeUpdates.push({
       id: node.id,
       label: node.id,
       title: node.score == null ? node.id : `${node.id} — score ${node.score.toFixed(3)}`,
       color: isSeed ? "#4ade80" : isTarget ? "#f472b6" : nodeColor({ ...node, tick }),
-      // sizeFor falls back to 12 internally so the graph still draws even if the
-      // display panel failed to load — a broken settings UI must not take the
-      // actual product down with it.
-      size: (isSeed || isTarget ? 1.6 : 1) * sizeFor(node),
+      // Endpoints get a flat 1.6x bump off the BASE slider, not sizeFor(node) —
+      // same reasoning as the colour override two lines up: seed/target must read
+      // as "the two fixed points of this search" no matter what. sizeFor(node)
+      // would instead run the seed's/target's own score or depth through the
+      // scaling curve, and both are misleading there: depth is trivially 0 for
+      // the seed forever (always "biggest") but whatever hop count the target was
+      // finally reached at for the target (shrinking on a HARDER search, backwards
+      // from what "this is an endpoint" should signal); score for both endpoints
+      // is the seed<->target baseline similarity, which is often low precisely
+      // when a search is interesting, again shrinking the very nodes that should
+      // stand out. sizeFor() falls back to 12 internally so the graph still draws
+      // even if the display panel failed to load.
+      size: isSeed || isTarget ? 1.6 * (display.nodeSize ?? 12) : sizeFor(node),
       // Kept on the node so a later "colour by" change can recolour without
       // re-running the search. vis-network ignores fields it doesn't recognise,
       // which is what makes a DataSet item a fine place to park real data.
@@ -147,26 +311,31 @@ function applyStep(step, seed, target, timing) {
       depth: node.depth,
       tick,
       endpoint: isSeed || isTarget,
-    };
-    // update() = insert or overwrite. A page can legitimately reappear in a later
-    // Step (it's linked from several pages); overwriting keeps the newest score
-    // rather than throwing a duplicate-id error the way add() would.
-    nodes.update(payload);
+    });
   }
+  // update() = insert or overwrite per item. A page can legitimately reappear in a
+  // later Step (it's linked from several pages); overwriting keeps the newest score
+  // rather than throwing a duplicate-id error the way add() would.
+  if (nodeUpdates.length) nodes.update(nodeUpdates);
 
+  const edgeAdds = [];
   for (const edge of step.edges || []) {
     const id = `${edge.source}->${edge.target}`;
-    if (!edges.get(id)) edges.add({ id, from: edge.source, to: edge.target });
+    if (!edges.get(id)) edgeAdds.push({ id, from: edge.source, to: edge.target });
   }
+  if (edgeAdds.length) edges.add(edgeAdds);
 
   // Only when the graph actually grew — a note-only Step (e.g. "reached target",
   // "stopped: node cap") has nothing new to fit the camera to.
   if ((step.nodes && step.nodes.length) || (step.edges && step.edges.length)) scheduleFit();
-  if (step.note) log(step.note, stepKind(step), timing ? formatTiming(timing) : undefined);
+  if (step.note) logStep(step, stepKind(step), timing ? formatTiming(timing) : undefined);
   // path is only ever set on the terminal success Step (see contracts.py) — every
   // node/edge it names was already added by an earlier Step, so this only needs to
   // restyle what's already on the canvas, never create anything.
-  if (step.path) highlightPath(step.path);
+  if (step.path) {
+    highlightPath(step.path);
+    showFoundBanner(step.note);
+  }
 }
 
 const PATH_COLOR = "#facc15"; // amber — distinct from every scoreColor/depthColor hue
@@ -234,6 +403,25 @@ function scheduleFit() {
     network.fit({ animation: { duration: 250, easingFunction: "easeInOutQuad" } });
     fitPending = false;
   });
+}
+
+// A live run has `fitInterval` (below) re-fitting every 400ms for as long as Steps
+// might still be arriving. A Forces/Display change made AFTER a run has stopped has
+// no such interval, but forceAtlas2 still takes a second or two to settle into the
+// new layout — one scheduleFit() call right as the slider moves would just fit to
+// the pre-settle positions and then go stale again, the same bug this is fixing.
+// settleFit() re-fits every 300ms and keeps doing so until 1.5s pass with no further
+// display change (each call restarts the countdown, so a slider drag keeps it alive
+// the whole time it's moving and for a beat after release).
+let settleInterval = null;
+let settleTimeout = null;
+function settleFit() {
+  if (!settleInterval) settleInterval = setInterval(scheduleFit, 300);
+  clearTimeout(settleTimeout);
+  settleTimeout = setTimeout(() => {
+    clearInterval(settleInterval);
+    settleInterval = null;
+  }, 1500);
 }
 
 function nodeColor(node) {
@@ -336,12 +524,32 @@ const displayDefaults = Object.fromEntries(
 );
 let display = {};
 
+// A range input's raw value is what the DOM/localStorage store; `logValue()`/
+// `rawFromLog()` are the two directions of an exponential remap for any slider
+// marked data-log (currently only Center force — see its comment in index.html
+// for why a linear slider felt broken there). Kept as a generic attribute-driven
+// pair rather than a name check on "centralGravity" specifically, matching every
+// other display control's "add HTML, not JS" pattern.
+function logValue(el) {
+  const min = parseFloat(el.dataset.logMin);
+  const max = parseFloat(el.dataset.logMax);
+  const t = parseFloat(el.value) / (parseFloat(el.max) || 100);
+  return min * Math.pow(max / min, t);
+}
+
+function rawFromLog(el, value) {
+  const min = parseFloat(el.dataset.logMin);
+  const max = parseFloat(el.dataset.logMax);
+  const t = Math.log(value / min) / Math.log(max / min);
+  return Math.round(t * (parseFloat(el.max) || 100));
+}
+
 function readDisplay() {
   display = {};
   for (const el of displayInputs) {
     const key = el.id.slice(2); // strip the "d-" prefix
     if (el.type === "checkbox") display[key] = el.checked;
-    else if (el.type === "range") display[key] = parseFloat(el.value);
+    else if (el.type === "range") display[key] = el.dataset.log != null ? logValue(el) : parseFloat(el.value);
     else display[key] = el.value;
   }
 }
@@ -356,7 +564,7 @@ function applyDisplay() {
     nodes: { size: display.nodeSize },
     edges: {
       width: display.linkWidth,
-      arrows: { to: { enabled: display.arrows, scaleFactor: 0.4 } },
+      arrows: { to: { enabled: true, scaleFactor: 0.4 } },
     },
     physics: {
       enabled: display.physics,
@@ -383,7 +591,8 @@ function applyDisplay() {
     const fill = n.endpoint ? n.color : nodeColor(n);
     return {
       id: n.id,
-      size: (n.endpoint ? 1.6 : 1) * sizeFor(n),
+      // Same endpoint carve-out as applyStep() above — keep in sync with it.
+      size: n.endpoint ? 1.6 * (display.nodeSize ?? 12) : sizeFor(n),
       color: n.onPath && !n.endpoint ? { background: fill, border: PATH_COLOR } : fill,
     };
   });
@@ -392,6 +601,17 @@ function applyDisplay() {
 
   applyLabelFade();
   localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify(display));
+
+  // scheduleFit() was previously only ever called from applyStep()/the live-run
+  // interval — i.e. only while new Steps were arriving. A Forces slider dragged
+  // AFTER a run finished (or re-checking "Auto-fit view" after unchecking it)
+  // changed the physics/visible layout with nothing left to call scheduleFit(),
+  // so the camera just went stale: confirmed live (2026-08-02) by nudging
+  // centralGravity on a finished run and finding network.getScale() never moved
+  // even though the graph had visibly recomputed to a very different radius.
+  // settleFit() (not a single scheduleFit()) because physics needs a beat to
+  // actually reach the new layout the slider asked for — see its own comment.
+  if (nodes.length) settleFit();
 }
 
 // vis-network has no "hide labels below zoom X" option, so this watches the zoom
@@ -484,7 +704,10 @@ function loadDisplay() {
     const key = el.id.slice(2);
     if (!(key in saved)) continue;
     if (el.type === "checkbox") el.checked = saved[key];
-    else el.value = saved[key];
+    // `saved[key]` is the semantic value readDisplay() computed (e.g. centralGravity
+    // 0.03), not the raw slider position — a log control needs the inverse mapping
+    // to know where to put its handle.
+    else el.value = el.dataset.log != null ? rawFromLog(el, saved[key]) : saved[key];
   }
   applyDisplay();
 }
@@ -619,8 +842,12 @@ function setupAutocomplete(inputId, listId) {
         // Stale guard: a slow response for a query the user has since typed
         // past must not overwrite what a faster, more recent one already drew —
         // same shape as showNodeDetail()'s openNodeTitle check, keyed on the
-        // query text instead of a node id.
+        // query text instead of a node id. Also checked against activeElement:
+        // without it, a response landing AFTER the input already blurred (e.g.
+        // the user clicked Run before the fetch resolved) would reopen a list
+        // that blur's hide() had just closed — a real race, not hypothetical.
         if (input.value.trim() !== query) return;
+        if (document.activeElement !== input) return;
         renderSuggestions(titles);
       });
     }, SUGGEST_DEBOUNCE_MS);
@@ -691,7 +918,7 @@ form.addEventListener("submit", async (event) => {
 
   nodes.clear();
   edges.clear();
-  logEl.replaceChildren();
+  resetLog(seed, target);
   closeNodePanel(); // the previously-inspected node no longer exists in the graph
   recorded = [];
   recordedTimings = [];
@@ -772,7 +999,7 @@ bind("replay", "click", () => {
   const timings = recordedTimings;
   nodes.clear();
   edges.clear();
-  logEl.replaceChildren();
+  resetLog(lastRun.seed, lastRun.target);
   closeNodePanel();
   setReplayEnabled(false);
   tickCounter = 0;

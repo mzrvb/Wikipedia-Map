@@ -114,10 +114,6 @@
             <summary>Display</summary>
             <p class="hint">Browser only. Never sent anywhere.</p>
             <label class="row">
-              <span>Arrows</span>
-              <input id="d-arrows" type="checkbox" data-display checked />
-            </label>
-            <label class="row">
               <span>Auto-fit view</span>
               <!-- Escape hatch, same pattern as Physics below: keeps the camera
                    zoomed to fit the whole graph as it grows. Uncheck to take manual
@@ -137,8 +133,11 @@
               <!-- Mirrors "Colour by" below: same score/depth fields already sitting
                    on every node, this time scaling the base slider above per node
                    instead of applying it uniformly. "uniform" reproduces the old
-                   one-slider-fits-all behaviour exactly. -->
-              <select id="d-sizeBy" data-display>
+                   one-slider-fits-all behaviour exactly. Seed/target are deliberately
+                   EXEMPT from this (see the isSeed||isTarget branch in app.js) -- they
+                   always render at a fixed size so the two fixed points of the search
+                   stay visually obvious no matter which mode is picked here. -->
+              <select id="d-sizeBy" data-display title="'similarity' means similarity-to-target on nodes found searching forward from the seed, but similarity-to-seed on nodes found searching backward from the target -- colour by 'side (fwd/bwd)' to see which half a node is on.">
                 <option value="uniform">uniform</option>
                 <option value="score">similarity</option>
                 <option value="depth">depth</option>
@@ -156,7 +155,7 @@
                    default.py's forward/backward frontiers found this node; recency:
                    the tick it was first discovered in, tracked in app.js). band is
                    score again, bucketed into 4 named ranges instead of a gradient. -->
-              <select id="d-colorBy" data-display>
+              <select id="d-colorBy" data-display title="'similarity' means similarity-to-target on nodes found searching forward from the seed, but similarity-to-seed on nodes found searching backward from the target -- 'side (fwd/bwd)' shows which half a node is on.">
                 <option value="score">similarity (gradient)</option>
                 <option value="band">similarity (bands)</option>
                 <option value="depth">depth</option>
@@ -184,13 +183,76 @@
             </label>
             <label>
               <span>Center force</span>
-              <input id="d-centralGravity" type="range" data-display min="0" max="0.5" step="0.005" value="0.01" />
+              <!-- 2026-08-02, fifth pass, done properly this time: previous cycles
+                   patched one variable at a time (curve shape, then floor, then
+                   ceiling, then a full lock to default) without ever mapping the whole
+                   stable envelope in one measurement. This pass swept centralGravity
+                   0.30/0.35/0.40/0.45 against TWO graph instances (a fresh ~81-node
+                   Cat->Astronomy run and a second run of the same pair forced through
+                   a deeper max_depth ceiling -- confirmed structurally identical, n=81
+                   both times, since default.py stops at the real meeting point
+                   regardless of the ceiling, but it's an independent re-run/re-settle,
+                   not a cached repeat), sampling network.getPositions() every 150ms
+                   with 2 repeated trials per value to catch flakiness, not just a
+                   single lucky settle. Result: 0.30/0.35/0.40 settled to 0px/frame
+                   drift on every trial on both runs; 0.45 settled clean on 3 of 4
+                   trials but produced a real 3-8px/frame non-decaying drift on the
+                   4th -- confirming the instability boundary sits between 0.40 and
+                   0.45, consistent with the earlier binary search (flaky from ~0.456).
+                   data-log-max is set to 0.35, not 0.40 -- 0.40 tested clean here too,
+                   but it was the number already shipped when the user reported this
+                   still felt broken last round, so it gets no benefit of the doubt;
+                   0.35 buys a full extra step of margin below the confirmed-flaky
+                   value with zero flakes across every trial run against it.
+                   data-log-min stays 0.005, re-confirmed on both graph instances
+                   (labels stayed visible even down to 0.003 on both, so 0.005 keeps
+                   its existing safety margin, not just "worked before").
+                   Per-step scaling is no longer a guess either: re-swept the real
+                   shipped file end to end at 10-unit steps and measured radius drop
+                   directly -- a flat 14.9-19.9% drop every single step, 0.005 through
+                   0.35, matching the ^-0.5 power-law fit from the original 11-point
+                   sweep at the old 0.005-0.5 bounds almost exactly. No dead zones,
+                   no runaway zone. Default raw recalculated 100->16 to keep resolving
+                   to the same semantic default, centralGravity≈0.0099 -- the slider
+                   moves in BOTH directions from default again, not locked to one edge.
+
+                   One false alarm caught and corrected IN this same measurement pass,
+                   worth recording because it looks identical to a real bug at a
+                   glance: a repeated-trial check at the new top edge (raw=100)
+                   flaked once in 4 tries at a 2.5s settle window, which looked exactly
+                   like the earlier real cg=0.5 instability finding. Before shipping
+                   0.35 anyway, re-ran that exact flaky transition 6 times watching a
+                   full 12 SECONDS straight instead of 2.5: every single trial decayed
+                   smoothly and completely to 0px/frame movement, just some taking
+                   ~3.5s instead of ~2.5s -- an ordinary damped settle after a sudden
+                   parameter jump (peaks briefly over 100px/frame, then decays
+                   monotonically to exactly zero), not oscillation. That's categorically
+                   different from the confirmed real instability at cg~=0.5, which
+                   stayed at 2.6-11.9px/frame with NO decay trend even 9 seconds in.
+                   Lesson: an "unsettled" reading only means something if the
+                   observation window is long enough to rule out a slow-but-normal
+                   settle -- 2-3s was not, for this graph size; 12s reliably is. -->
+              <input
+                id="d-centralGravity"
+                type="range"
+                data-display
+                data-log
+                data-log-min="0.005"
+                data-log-max="0.35"
+                min="0"
+                max="100"
+                step="1"
+                value="16"
+              />
             </label>
             <label>
               <span>Repel force</span>
               <!-- Slider is the MAGNITUDE; vis-network wants it negative, so app.js
-                   negates. A slider that goes right for "more repel" is the sane UI. -->
-              <input id="d-repel" type="range" data-display min="0" max="250" step="5" value="45" />
+                   negates. A slider that goes right for "more repel" is the sane UI.
+                   Default raised 45->70 (2026-08-02 measurement pass): higher repel
+                   consistently improved label spacing at every graph size tested with
+                   no stability cost — see HISTORY. -->
+              <input id="d-repel" type="range" data-display min="0" max="250" step="5" value="70" />
             </label>
             <label>
               <span>Link force</span>
@@ -198,7 +260,12 @@
             </label>
             <label>
               <span>Link distance</span>
-              <input id="d-springLength" type="range" data-display min="20" max="400" step="5" value="110" />
+              <!-- Max capped 400->180 (2026-08-02 measurement pass): above ~200 the
+                   layout never settles once a graph reaches ~80 nodes (a fixed run of
+                   default.py's typical size) — a Playwright probe measured 20-30px/sec
+                   of continuing drift long after physics should have damped out, and
+                   the graph visibly flies apart instead of organizing. See HISTORY. -->
+              <input id="d-springLength" type="range" data-display min="20" max="180" step="5" value="110" />
             </label>
             <button id="reset-display" type="button">Reset display</button>
           </details>
@@ -215,6 +282,16 @@
           <p id="node-panel-meta" class="hint"></p>
           <p id="node-panel-summary"></p>
           <a id="node-panel-link" class="hidden" href="#" target="_blank" rel="noopener noreferrer">Open on Wikipedia ↗</a>
+        </div>
+        <!-- Shown only once step.path lands (the terminal success Step, contracts.py)
+             -- reuses that Step's own note text rather than composing a second phrasing
+             of "reached target in N hops", so the banner can never drift out of sync
+             with what the log already says. Hidden again by resetLog() at the next
+             run/replay. Sibling of #graph, same nesting rule as #panel/#node-panel. -->
+        <div id="found-banner" class="hidden" role="status">
+          <span class="found-banner-icon" aria-hidden="true"></span>
+          <span id="found-banner-label"></span>
+          <button id="found-banner-close" type="button" aria-label="Dismiss">×</button>
         </div>
       </div>
       <aside id="log" aria-live="polite"></aside>
