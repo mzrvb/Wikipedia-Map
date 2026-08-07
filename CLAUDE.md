@@ -9,6 +9,49 @@ Update it alongside this file — see [Working practice](#working-practice).
 
 ## STATUS
 
+**Connect human-play UI built — new standalone page, backend session (2026-08-07).** The
+backend groundwork (`GET /api/article`, `POST /api/evaluate_run`, `feedback.py`) finally has a
+consumer: `static/play.{html,js,css}`, a SEPARATE page from the AI-solver graph view, reachable
+at `/play.html`. Human speedruns page A → B by clicking real article links (live links
+highlighted, dead ones greyed via the server's `wm-link`/`wm-disabled` annotation); the finished
+run is graded move-by-move with chess-style badges through `/api/evaluate_run` (contract 3). Built
+standalone, not into `app.js`, both because it's a genuinely different interaction (article reader
+vs vis-network canvas — no shared JS by design) and because `app.js`/`index.html` were dirty from a
+parallel frontend session. **Not yet linked from the header toggle** — that's the integration point
+once the frontend session lands; reach it directly at `/play.html` for now. No Python touched, no
+contract change, served by the existing StaticFiles mount. Verified live: `/play.html` 200,
+`/api/article?title=Cat` returned 1755 `wm-link`/1543 `wm-disabled`/0 scripts, a real
+`Cat→Felidae→Astronomy` POST graded Inaccuracy + Brilliant with the exact shape the recap renders.
+`node --check` clean. DOM interactions (delegated clicks, screen toggles) proven by reading only —
+no browser-automation tool this session. Full writeup in HISTORY.
+
+**Run-log redesign in progress — spec locked, nothing built (2026-08-06).** The twin-rail
+"Interchange" log below is scheduled to be replaced by a transit-map style: thick green
+(seed/forward) and purple (target/backward) rounded-pill rails, white circular stops per
+**depth** (user-facing word — "round" stays internal), curving into a shared gold U-turn loop
+at the destination row. Each stop's subline: `[x seconds, +k links, x+ total seconds]`. Header
+gains an empty progress-bar slot next to SEED/TARGET, green filling left-to-right, purple
+right-to-left. **Open:** which of a round's ≤20 candidates becomes the one station name shown
+(no tiebreak rule yet) — resolve before building, see HISTORY, this is the same
+single-path-vs-beam misreading the 2026-08-02 rework below already fixed once. A candlestick
+chart was also mocked up (scratch, discarded) and is parked in favor of this direction. Do not
+start implementing until the station-naming rule is settled.
+
+**Auto-fit graph hidden behind the settings panel — fixed; redundant log "round N:" tag removed
+(2026-08-05).** Live-driven via a scratch Playwright/Chromium venv (no `claude-in-chrome`-style
+tool available this session) against the real running dev server, through several short Connect
+runs. Found a genuine bug, not a guess: `network.fit()` frames the graph against the FULL `#graph`
+canvas rect, but `#panel`/`#node-panel` are floating siblings that visually cover part of that same
+canvas — measured live via `canvasToDOM()` against `getBoundingClientRect()`, a normal 1-hop
+`Dog -> Cat` run already had 2/40 nodes rendered directly under the settings panel, 7/81 on
+`Cat -> Astronomy`. Fixed with a new `fitGraph()` (`app.js`) that fits the graph into the safe
+rectangle (canvas minus whatever panels are currently open) instead of the full canvas —
+re-measured at 0/40, 0/81, and 0/81 with both panels open at once. Separately, the twin-rail log's
+round rows said `round N:` in both the fwd and bwd column of the same row — redundant, since one
+row can only be one round; removed from both columns, and the now-unused `roundNumber` counter
+deleted rather than left dead. Frontend-only, no contract/server change. 109 fast tests green
+(nothing Python touched), `node --check` clean. Full before/after numbers in HISTORY.
+
 **`feedback.py` implemented: rank-based move grading (contract 3) — docs backfilled (2026-08-02).**
 Landed by a parallel backend session (commit `9eb769f`) with no doc update in that commit —
 recorded here after the fact. `feedback.py` was a docstring-only placeholder until now;

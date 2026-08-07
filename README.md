@@ -31,11 +31,17 @@ winning route's own note when one is found. Both rails show per-step and total-r
 (`[+123ms · 4.56s total]`) under each stop, measured in the browser. Light theme. 109 fast tests
 green, `ruff check` clean.
 
-**Contract 3 (`feedback.py`) is now implemented**, backend-only: `evaluate_move()` grades a move
+**Contract 3 (`feedback.py`) is implemented** and now has a UI: `evaluate_move()` grades a move
 by where it ranks, by similarity to the target, among every real link the page it was played
 from actually offered — not an absolute score, since the same cosine value is a great pick on a
-weak page and a blunder on a strong one. Nothing calls it yet; it's groundwork for Connect's
-human-play mode, which doesn't exist in the UI. See `HISTORY.md`.
+weak page and a blunder on a strong one.
+
+**Connect human-play mode (`/play.html`)** is the consumer: a standalone page (separate from the
+AI-solver graph view) where you speedrun page A → B by clicking real article links. Every live
+link is highlighted, dead ones are greyed out, and at the end the whole run is graded move by
+move with chess.com-style badges (Brilliant → Blunder). Backed by `GET /api/article` (annotated
+Wikipedia HTML) and `POST /api/evaluate_run` (batch grading). Not yet linked from the header
+toggle — reach it directly at `/play.html` for now. See `HISTORY.md`.
 
 **2026-07-31: `greedy`/`astar` stripped, `default.py` is now the ONLY Connect algorithm.** A
 direct, informed user call — repeated live testing showed the same result on hard cross-domain

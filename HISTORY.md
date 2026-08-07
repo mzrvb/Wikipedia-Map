@@ -9,6 +9,126 @@ This file explains *why*; git explains *what*. Newest entries at the top.
 
 ---
 
+## 2026-08-07 — Connect human-play UI built (new standalone page, backend session)
+
+The backend already had everything human-play needs — `GET /api/article` (real Wikipedia HTML
+with every link pre-marked `wm-link`/`wm-disabled`, from `wiki/article.py`), `POST
+/api/evaluate_run` (batch grading through `feedback.py`, contract 3), plus `/api/suggest` and
+`/api/page`. Nothing on the frontend consumed any of it. This session built that consumer.
+
+**Built as a SEPARATE page — `static/play.{html,js,css}` — not bolted into `index.html`/`app.js`.**
+Two reasons, one architectural and one practical:
+- *Architectural:* the AI-solver view is a force-directed vis-network canvas watching an algorithm
+  search; human-play is an article reader where the human IS the search. They share the backend and
+  the header look and nothing else, so sharing a 1100-line `app.js` built entirely around
+  vis-network would be forcing two unrelated interactions into one file. They ship no JS in common
+  by design (the autocomplete is deliberately re-implemented compactly in `play.js` rather than
+  extracted — same hard-won lessons baked in: debounce, stale-response `seq` guard,
+  `document.activeElement` focus guard, mousedown-not-click).
+- *Practical:* `app.js`/`index.html`/`CLAUDE.md`/`HISTORY.md` were dirty from a parallel frontend
+  session this same day. A separate page kept this work off their files entirely (only these two
+  shared docs are touched, by prepend).
+
+**The game loop (`play.js`):** three screens (start → play → recap) toggled by `showScreen`. Start
+resolves both fields to a real title via `/api/suggest` before beginning (the exact fix `app.js`
+made 2026-07-31 — the grader compares titles with `==`, so `astronomy` must become `Astronomy`);
+`seed == target` is handled as a trivial 0-move win. `navigate(title, {record})` is the core: it
+records a `{from, to}` move (except for the opening seed landing), pushes the breadcrumb, checks
+`title === target` BEFORE fetching (no point rendering the target just to cover it with the recap),
+then `innerHTML`s the annotated article. One delegated click listener on `#article` handles every
+`a.wm-link` (delegation, not per-link, because the innerHTML is rebuilt each navigation);
+`wm-disabled`/other `<a>` clicks are swallowed so a stray `href="#"` can't jump the page. On finish
+(reached or gave up) it POSTs the whole move list to `/api/evaluate_run` and renders one badge per
+move, coloured by grade.
+
+**`innerHTML` is used deliberately and safely** for the article body: the server already stripped
+`<script>`/`<style>` and re-escaped all text in `wiki/article.py`, and that HTML is *designed* to be
+spliced into the DOM (the whole `wm-link`/`data-title` scheme only works if it is). Page titles
+everywhere else (breadcrumb, autocomplete, recap) use `textContent` — untrusted Wikipedia text.
+
+**No backend change, no contract change, no Python touched.** The page is served by the existing
+`StaticFiles(html=True)` mount, reachable at `/play.html`. It is NOT yet linked from `index.html`'s
+header toggle — that's the integration point once the frontend session's `app.js` work lands, and
+was left undone rather than edit into the middle of their uncommitted changes.
+
+**Verified live against the running dev server**, not just static-checked: `/play.html` serves 200;
+`/api/article?title=Cat` returned 758 KB with 1755 `wm-link` / 1543 `wm-disabled` annotations and 0
+`<script>` tags, sample `<a href="#" class="wm-link" data-title="Felidae">` matching exactly what
+`play.js` delegates on; a real two-move POST to `/api/evaluate_run` (`Cat→Felidae→Astronomy`, target
+Astronomy) graded `Felidae` **Inaccuracy** (ranked 561/1181, delta −0.058) and `Astronomy`
+**Brilliant** (reached, delta +0.857), response shape matching `renderEvaluations` exactly.
+`node --check` clean, no empty files. Not yet click-tested in a real browser (no browser-automation
+tool this session) — the DOM interactions (delegated clicks, screen toggles) are the one part
+proven only by reading, same caveat as several earlier frontend passes.
+
+## 2026-08-06 — Run-log redesign: transit-map direction chosen, spec locked, nothing built yet
+
+Design-only session, no code changed. Two directions were explored to replace the twin-rail
+"Interchange" log: a dual candlestick chart (scratch mockup, throwaway HTML in a temp
+scratchpad — not in the repo, not linked from anywhere, treat it as gone) and a transit-map
+style with circular "station" stops, which the user is prototyping directly in Canva and has
+now locked several decisions on. **The candlestick direction is parked, not chosen.**
+
+**Locked so far, from a live Canva reference (`Screenshot 2026-08-06 025524.png`, user's
+machine, not in the repo):** two thick vertical rounded-pill rails (green = seed/forward,
+purple = target/backward, both a genuine palette departure from the current blue/orange),
+white-fill/black-stroke circular stops, one stop per depth per side. The two rails curve into
+a shared gold U-turn loop at the terminal (destination) row instead of the current diamond +
+bridge. User-facing label is **"Depth N", not "round N"** (same integer either way — this only
+changes display text). Each stop's subline format is now
+**`[x seconds, +k links, x+ total seconds]`** — `+k links` is what keeps a single-title-per-depth
+station from implying the search only ever considered one page; the actual frontier is up to
+top-K (20) candidates per side per round, not one. Header also gains a compressed second copy of
+the same convergence metaphor: an empty box next to SEED/TARGET, meant to hold a plain
+progress bar, green filling from the left, purple from the right.
+
+**Open, not yet answered:** which of a round's up to 20 candidates becomes "the" station name —
+presumably highest score that round, but no tiebreak rule exists yet for near-ties. This is a
+data/ranking decision, not a styling one, and matters more than it looks: labeling one page per
+round risks re-implying a single evolving path per side, which is the exact misreading the
+2026-08-02 twin-rail rework (below) was built to correct for the AI's real bidirectional-beam
+behavior. Worth resolving before implementation, not after.
+
+**Feasibility read, not yet built:** the rail/stop mechanics are believed to be a re-skin of the
+existing `.rails`/`.rails-cap` row-stacking technique (`style.css`) that already makes the
+current log grow live as rows append — thicker/colored bars and white dots instead of thin grey
+lines and colored dots, no new growth mechanism needed. The gold U-turn only ever appears once,
+on the terminal row, at a fixed known gap between the two rail x-positions (same reasoning
+`--dot-x`/`--col-gap` already rely on) — so it's judged to be a single fixed-size SVG/CSS asset
+swapped in at the end, not a per-round computed curve. Unverified — no prototype built against
+this reasoning yet.
+
+---
+
+## 2026-08-05 — Auto-fit graph hidden behind the settings panel — fixed; redundant "round N:" log tag removed
+
+User-requested pass: drive several short live Connect runs in a real browser and fix whatever
+"doesn't fit," plus drop the repeated `round N:` prefix from the twin-rail log. No
+`claude-in-chrome`-style tool available, so a scratch Playwright/Chromium venv (discarded after)
+drove the real dev server, same as every earlier frontend pass here.
+
+**Auto-fit bug, confirmed live:** `network.fit()` frames the graph against the FULL `#graph`
+canvas rect, but `#panel`/`#node-panel` are floating siblings covering part of that same canvas
+(siblings, not children — see index.html). `fit()` has no way to know they're there. Measured by
+converting `getPositions()` to screen space via `canvasToDOM()` against `getBoundingClientRect()`:
+a 1-hop `Dog -> Cat` run had 2/40 nodes under the settings panel; `Cat -> Astronomy` (81 nodes) had
+7 — a normal short run, not an edge case.
+
+Fixed with a new `fitGraph()` (`app.js`): computes the graph's bounding box, builds a "safe"
+rectangle (canvas minus whichever panel is open), and calls `network.moveTo()` to center/scale
+into that instead of the full canvas — falls back to the full canvas if both panels open would
+leave under 100px safe width. Re-measured: 0/40, 0/81, and 0/81 with both panels open at once.
+Frontend-only; `moveTo()` drives the same view `fit()` would have, so nothing downstream breaks.
+
+**Round-tag redundancy:** each round row showed `round N: X fwd` / `round N: X bwd` — the same
+number said twice on one row. Removed the prefix from both columns (`logStep()`), leaving `X fwd`
+/ `X bwd` — row position already conveys the round, same as origin/destination/exhausted rows.
+Deleted the now-unused `roundNumber` counter rather than leave it dead.
+
+`ruff check`/`node --check` clean, 109 fast tests green (frontend-only).
+
+---
+
 ## 2026-08-02 — `feedback.py` implemented: rank-based move grading (contract 3) — docs backfilled
 
 Landed by a parallel backend session as commit `9eb769f` with no HISTORY/CLAUDE/README update in

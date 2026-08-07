@@ -90,7 +90,6 @@ function roundCounts(step) {
 // :last-child alone can't be trusted to know where a rail should stop.
 let railStarted = false;
 let railEnded = false;
-let roundNumber = 0;
 
 // Floating success banner (see index.html) — shown once step.path lands,
 // reusing that Step's own note text so it can't drift out of sync with what
@@ -117,7 +116,6 @@ function resetLog(seed, target) {
   hideFoundBanner();
   railStarted = false;
   railEnded = false;
-  roundNumber = 0;
 
   const header = document.createElement("div");
   header.id = "log-header";
@@ -183,12 +181,8 @@ function logStep(step, kind, meta) {
   row.className = "row " + kind;
 
   if (kind === "round") {
-    roundNumber++;
     const { fwd, bwd } = roundCounts(step);
-    row.append(
-      makeCol("fwd", `round ${roundNumber}: ${fwd} fwd`),
-      makeCol("bwd", `round ${roundNumber}: ${bwd} bwd`)
-    );
+    row.append(makeCol("fwd", `${fwd} fwd`), makeCol("bwd", `${bwd} bwd`));
   } else {
     // origin/destination/exhausted share one raw note across both columns —
     // there's nothing per-side to say, only per-run.
@@ -397,11 +391,76 @@ function scheduleFit() {
   if (!display.autoFit || fitPending) return;
   fitPending = true;
   requestAnimationFrame(() => {
+    fitGraph();
+    fitPending = false;
+  });
+}
+
+// network.fit() centers/scales the graph into the WHOLE #graph canvas rect — but
+// #panel (and #node-panel, when open) float on top of that same canvas, so a slice
+// of whatever fit() frames is physically hidden behind them. Confirmed live
+// (2026-08-05, Playwright): converting each node's canvas position to screen space
+// and checking it against #panel's DOM rect found real nodes rendered directly
+// underneath the panel on ordinary short runs (2/40 on a 1-hop Dog->Cat, 7/81 on
+// Cat->Astronomy) — not a rare edge case. Fixed by computing the fit ourselves
+// against the SAFE rectangle (canvas minus whatever panels are currently visible)
+// instead of the full canvas — same idea as network.fit(), just aimed at the area
+// a user can actually see. Only #panel/#node-panel are considered: #found-banner
+// and the log rail (#log) never sit on top of #graph (see index.html's sibling-
+// nesting comment) so they can't hide a node this way.
+function fitGraph() {
+  const ids = nodes.getIds();
+  if (!ids.length) return;
+
+  const positions = network.getPositions(ids);
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const id of ids) {
+    const { x, y } = positions[id];
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  // A single node (or a cluster of coincident ones) has zero graph-space width/
+  // height — flooring both at 1 avoids a divide-by-zero blowing scale up to Infinity.
+  const graphW = Math.max(maxX - minX, 1);
+  const graphH = Math.max(maxY - minY, 1);
+  const graphCenterX = (minX + maxX) / 2;
+  const graphCenterY = (minY + maxY) / 2;
+
+  const canvasRect = document.getElementById("graph").getBoundingClientRect();
+  let safeLeft = 0;
+  let safeRight = canvasRect.width;
+  const panelEl = document.getElementById("panel");
+  if (panelEl && !panelEl.classList.contains("hidden")) {
+    safeRight = Math.min(safeRight, panelEl.getBoundingClientRect().left - canvasRect.left);
+  }
+  const nodePanelEl = document.getElementById("node-panel");
+  if (nodePanelEl && !nodePanelEl.classList.contains("hidden")) {
+    safeLeft = Math.max(safeLeft, nodePanelEl.getBoundingClientRect().right - canvasRect.left);
+  }
+  // Floors below which the safe area would be too thin to mean anything (e.g. both
+  // panels open on a narrow viewport) — fall back to the full canvas rather than
+  // fitting into a sliver.
+  const safeW = safeRight - safeLeft >= 100 ? safeRight - safeLeft : canvasRect.width;
+  const effectiveLeft = safeW === canvasRect.width ? 0 : safeLeft;
+  const safeH = canvasRect.height;
+
+  const FIT_PADDING = 0.9; // leaves a margin around the graph, same spirit as vis-network's own fit()
+  const scale = Math.min(safeW / graphW, safeH / graphH) * FIT_PADDING;
+
+  // moveTo's `position` is the graph-space point that lands at the CENTER of the
+  // whole canvas rect. We want the graph's bounding-box center to land at the
+  // center of the SAFE rect instead — offset it by the DOM-pixel gap between the
+  // two centers, converted into graph units via the scale we just picked.
+  const domOffsetX = effectiveLeft + safeW / 2 - canvasRect.width / 2;
+  network.moveTo({
+    position: { x: graphCenterX - domOffsetX / scale, y: graphCenterY },
+    scale,
     // vis-network's actual option key is "easingFunction", not "easing" — an
     // unrecognised key is silently dropped, not an error, so this typo cost nothing
-    // visible on its own, but it's still wrong. Caught alongside the real bug below.
-    network.fit({ animation: { duration: 250, easingFunction: "easeInOutQuad" } });
-    fitPending = false;
+    // visible on its own, but it's still wrong. Caught alongside the real bug above.
+    animation: { duration: 250, easingFunction: "easeInOutQuad" },
   });
 }
 
