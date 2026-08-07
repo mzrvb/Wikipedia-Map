@@ -1,0 +1,108 @@
+<!doctype html>
+<!-- Connect · Human-play mode — a Wikipedia speedrun the USER clicks through.
+
+     A deliberately SEPARATE page from index.html (the AI-solver graph view), not a
+     panel bolted onto it. The two are different interactions: index.html is a
+     force-directed vis-network canvas watching an algorithm search; this is an
+     article reader where the human is the search. They share the backend and the
+     header look, nothing else — so they share no JS either.
+
+     The whole page is driven by three endpoints that already exist server-side:
+       GET  /api/suggest?q=      — title autocomplete for the start form
+       GET  /api/article?title=  — real Wikipedia HTML, every link pre-marked
+                                    clickable (wm-link) or inert (wm-disabled)
+       POST /api/evaluate_run    — grade the finished run, move by move (contract 3)
+
+     No search knob lives here: a human run has no top-K/max-depth. Contract 1 is
+     untouched — nothing on this page reaches an algorithm. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>wikimap · play</title>
+    <link rel="stylesheet" href="play.css" />
+  </head>
+  <body>
+    <header>
+      <h1><a href="/">wikimap</a></h1>
+      <div class="mode-toggle" role="tablist" aria-label="Mode">
+        <!-- Solve links back to the AI graph view; Play is where we are. -->
+        <a href="/" role="tab" class="tab">AI solve</a>
+        <span role="tab" class="tab active" aria-selected="true">Play</span>
+      </div>
+      <span class="mode">Connect</span>
+    </header>
+
+    <!-- ── Start screen: pick the two endpoints ───────────────────────────── -->
+    <section id="start" class="screen">
+      <form id="start-form" class="start-card">
+        <h2>Wikipedia speedrun</h2>
+        <p class="hint">
+          Get from the first page to the second using only the links on each
+          article. Every real link is highlighted; dead ones are greyed out. Fewer
+          clicks is better — we'll grade every move at the end.
+        </p>
+
+        <div class="field">
+          <label for="seed">Start at</label>
+          <div class="input-wrap">
+            <input id="seed" name="seed" value="Cat" required maxlength="200"
+                   autocomplete="off" aria-label="Start page" />
+            <ul id="seed-suggestions" class="suggestions" hidden></ul>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="target">Reach</label>
+          <div class="input-wrap">
+            <input id="target" name="target" value="Astronomy" required maxlength="200"
+                   autocomplete="off" aria-label="Target page" />
+            <ul id="target-suggestions" class="suggestions" hidden></ul>
+          </div>
+        </div>
+
+        <button id="start-btn" type="submit">Start run</button>
+        <p id="start-error" class="error" hidden></p>
+      </form>
+    </section>
+
+    <!-- ── Play screen: the current article + a live HUD ───────────────────── -->
+    <section id="play" class="screen" hidden>
+      <div id="hud">
+        <div class="hud-goal">
+          <span class="hud-label">Goal</span>
+          <strong id="hud-target"></strong>
+        </div>
+        <div class="hud-stats">
+          <span><strong id="hud-moves">0</strong> moves</span>
+          <span><strong id="hud-time">0:00</strong></span>
+        </div>
+        <nav id="hud-path" class="hud-path" aria-label="Your path"></nav>
+        <div class="hud-actions">
+          <button id="give-up" type="button" class="ghost">Give up</button>
+        </div>
+      </div>
+
+      <!-- Real Wikipedia HTML lands here via innerHTML. That's safe on purpose:
+           the server (wiki/article.py) already stripped <script>/<style> and
+           re-escaped all text, and rewrote every <a> to either wm-link (href="#",
+           carries data-title) or wm-disabled (no href at all). Clicks are handled
+           by ONE delegated listener on this container, not per-link, since the
+           innerHTML is thrown away and rebuilt on every navigation. -->
+      <article id="article" aria-live="polite"></article>
+      <div id="article-loading" class="loading" hidden>Loading…</div>
+    </section>
+
+    <!-- ── Recap overlay: the graded run ───────────────────────────────────── -->
+    <section id="recap" class="screen overlay" hidden>
+      <div class="recap-card">
+        <h2 id="recap-title">Run complete</h2>
+        <p id="recap-summary" class="hint"></p>
+        <ol id="recap-moves" class="recap-moves"></ol>
+        <button id="play-again" type="button">Play again</button>
+      </div>
+    </section>
+
+    <script src="play.js"></script>
+  </body>
+</html>

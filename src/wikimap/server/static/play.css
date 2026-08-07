@@ -1,0 +1,394 @@
+/* Connect · Human-play mode styling.
+ *
+ * Standalone from style.css (the graph view). It mirrors that file's light-theme
+ * :root variables so the two pages feel like one app, but it has its own needs —
+ * long-form article typography, the two link states, and the chess-style grade
+ * palette — that don't belong in the graph stylesheet. */
+
+:root {
+  --bg: #f7f7f5;
+  --panel: #ffffff;
+  --line: #e2e2dd;
+  --text: #1c1c1a;
+  --muted: #6b6b63;
+  --accent: #2f6f4f;
+  --link: #0645ad; /* Wikipedia-blue, so a live link reads as a link */
+  --disabled: #9a9a92;
+
+  /* Grade palette — chess.com-adjacent, ordered best → worst. */
+  --g-brilliant: #26c6b3;
+  --g-best: #6aa84f;
+  --g-good: #93b96a;
+  --g-inaccuracy: #e0b338;
+  --g-mistake: #e08a30;
+  --g-blunder: #cc3b34;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1b1a;
+    --panel: #242422;
+    --line: #3a3a36;
+    --text: #ececea;
+    --muted: #9a9a90;
+    --accent: #6fbf8f;
+    --link: #6fa8ff;
+    --disabled: #6a6a62;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.55;
+}
+
+/* ── Header (mirrors style.css's 3-column grid) ─────────────────────────────── */
+header {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 0.6rem 1.2rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+header h1 {
+  margin: 0;
+  font-size: 1.15rem;
+  letter-spacing: 0.02em;
+}
+header h1 a {
+  color: inherit;
+  text-decoration: none;
+}
+header .mode {
+  justify-self: end;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.mode-toggle {
+  justify-self: center;
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.mode-toggle .tab {
+  padding: 0.3rem 0.9rem;
+  font-size: 0.85rem;
+  text-decoration: none;
+  color: var(--muted);
+  background: transparent;
+}
+.mode-toggle .tab.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ── Screens ────────────────────────────────────────────────────────────────── */
+.screen[hidden] {
+  display: none;
+}
+
+/* ── Start card ─────────────────────────────────────────────────────────────── */
+#start {
+  display: flex;
+  justify-content: center;
+  padding: 3rem 1rem;
+}
+.start-card {
+  width: min(520px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 1.6rem 1.8rem;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.06);
+}
+.start-card h2 {
+  margin: 0 0 0.4rem;
+}
+.field {
+  margin: 1rem 0;
+}
+.field label {
+  display: block;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+input[type="text"],
+.field input {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  font-size: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+}
+button {
+  font: inherit;
+  cursor: pointer;
+  border: none;
+  border-radius: 8px;
+  padding: 0.55rem 1.1rem;
+  background: var(--accent);
+  color: #fff;
+}
+button.ghost {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+button:hover {
+  filter: brightness(1.05);
+}
+#start-btn {
+  width: 100%;
+  margin-top: 0.4rem;
+  font-size: 1rem;
+}
+.hint {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.error {
+  color: var(--g-blunder);
+  font-size: 0.9rem;
+}
+
+/* ── Autocomplete dropdown ──────────────────────────────────────────────────── */
+.input-wrap {
+  position: relative;
+}
+.suggestions {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 2px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0.25rem 0;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
+  max-height: 260px;
+  overflow-y: auto;
+}
+.suggestions[hidden] {
+  display: none;
+}
+.suggestions li {
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+}
+.suggestions li:hover {
+  background: var(--bg);
+}
+
+/* ── HUD (play screen top bar) ──────────────────────────────────────────────── */
+#hud {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.8rem 1.4rem;
+  padding: 0.7rem 1.2rem;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.hud-goal {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+.hud-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.hud-goal strong {
+  font-size: 1.05rem;
+  color: var(--accent);
+}
+.hud-stats {
+  display: flex;
+  gap: 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.hud-actions {
+  margin-left: auto;
+}
+.hud-path {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.crumb.current {
+  color: var(--text);
+  font-weight: 600;
+}
+.crumb-sep {
+  color: var(--disabled);
+}
+
+/* ── Article body ───────────────────────────────────────────────────────────── */
+#article {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 1.5rem 1.2rem 4rem;
+}
+#article h1,
+#article h2,
+#article h3 {
+  line-height: 1.25;
+}
+#article img {
+  max-width: 100%;
+  height: auto;
+}
+#article table {
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+
+/* The two link states — the core of the mode. A live move is bright and inviting;
+   a dead link is visibly out of play so the user doesn't waste a click discovering
+   it does nothing. */
+#article a.wm-link {
+  color: var(--link);
+  text-decoration: none;
+  background: color-mix(in srgb, var(--link) 12%, transparent);
+  border-radius: 3px;
+  padding: 0 2px;
+  cursor: pointer;
+}
+#article a.wm-link:hover {
+  background: color-mix(in srgb, var(--link) 24%, transparent);
+  text-decoration: underline;
+}
+#article a.wm-disabled {
+  color: var(--disabled);
+  text-decoration: none;
+  cursor: default;
+  pointer-events: none;
+}
+
+.loading {
+  text-align: center;
+  color: var(--muted);
+  padding: 2rem;
+}
+
+/* ── Recap overlay ──────────────────────────────────────────────────────────── */
+.overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 3rem 1rem;
+  background: rgba(0, 0, 0, 0.45);
+  overflow-y: auto;
+}
+.recap-card {
+  width: min(620px, 100%);
+  background: var(--panel);
+  border-radius: 14px;
+  padding: 1.6rem 1.8rem;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.recap-card h2 {
+  margin: 0 0 0.3rem;
+}
+.recap-moves {
+  list-style: none;
+  margin: 1.2rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.recap-move {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.recap-move-titles {
+  font-size: 0.92rem;
+}
+.recap-note {
+  grid-column: 1 / -1;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.recap-delta {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85rem;
+}
+.recap-delta.up {
+  color: var(--g-best);
+}
+.recap-delta.down {
+  color: var(--g-blunder);
+}
+.recap-pending {
+  color: var(--muted);
+}
+#play-again {
+  width: 100%;
+}
+
+/* Grade badges — one class per grade value, coloured best → worst. */
+.grade {
+  display: inline-block;
+  min-width: 5.5rem;
+  text-align: center;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #fff;
+}
+.grade-brilliant {
+  background: var(--g-brilliant);
+}
+.grade-best {
+  background: var(--g-best);
+}
+.grade-good {
+  background: var(--g-good);
+}
+.grade-inaccuracy {
+  background: var(--g-inaccuracy);
+  color: #3a2f00;
+}
+.grade-mistake {
+  background: var(--g-mistake);
+}
+.grade-blunder {
+  background: var(--g-blunder);
+}
